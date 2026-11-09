@@ -64,6 +64,14 @@
         </svg>
         Carte
       </button>
+      <button id="bouton-assistant" class="bouton" aria-pressed="false"
+              title="Ouvrir l'assistant a la place de la page">
+        <svg viewBox="0 0 24 24" aria-hidden="true" class="icone">
+          <path d="M4 5.5h16v10.5H11l-4.5 3.5V16H4z"></path>
+          <path d="M8 9.5h8M8 12.5h5"></path>
+        </svg>
+        Assistant
+      </button>
       <button id="bouton-joueurs" class="bouton" aria-pressed="false"
               title="Masquer les pages et les encadres reserves au MJ">
         <span class="voyant"></span> Mode joueurs
@@ -121,7 +129,8 @@
       <article id="page" class="page" tabindex="-1"></article>
     </section>
 
-    <!-- Colonne de droite : la conversation -->
+    <!-- La conversation : elle prend la place de la page quand on clique
+         sur « Assistant » ; ouvrir une page y ramene. -->
     <section class="colonne colonne-droite">
       <div class="droite-barre">
         <p class="etiquette">Assistant</p>

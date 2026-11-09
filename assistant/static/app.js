@@ -18,6 +18,7 @@
     choixModele: $("#choix-modele"),
     boutonJoueurs: $("#bouton-joueurs"),
     boutonCarte: $("#bouton-carte"),
+    boutonAssistant: $("#bouton-assistant"),
     boutonSurCarte: $("#bouton-sur-carte"),
     boutonVue: $("#bouton-vue"),
     recherche: $("#champ-recherche"),
@@ -459,8 +460,22 @@
     });
   }
 
+  // La page et l'assistant occupent la meme place. Ouvrir une page (lien,
+  // arborescence, source citee, carte) ramene a la page ; un simple
+  // rafraichissement (pousser = false) laisse la vue telle quelle.
+  function montrerVue(vue) {
+    const assistant = vue === "assistant";
+    document.body.classList.toggle("vue-assistant", assistant);
+    el.boutonAssistant.setAttribute("aria-pressed", String(assistant));
+    if (assistant) {
+      defiler();
+      el.question.focus();
+    }
+  }
+
   async function ouvrirPage(chemin, pousser = true, options = {}) {
     if (!chemin) return;
+    if (pousser) montrerVue("page");
     const donnees = await api("/api/page?chemin=" + encodeURIComponent(chemin));
     fermerCarte();
     if (donnees.erreur === "introuvable") {
@@ -533,6 +548,7 @@
       },
       selection: memoire ? memoire.selection : null,
       demander: (texte) => {
+        montrerVue("assistant");
         el.question.value = texte;
         el.question.dispatchEvent(new Event("input"));
         el.question.focus();
@@ -1280,6 +1296,10 @@
     ouvrirPage(etat.cartes[0].chemin);
   });
 
+  el.boutonAssistant.addEventListener("click", () => {
+    montrerVue(document.body.classList.contains("vue-assistant") ? "page" : "assistant");
+  });
+
   el.boutonSurCarte.addEventListener("click", () => {
     if (!etat.surCarte) return;
     etat.vueTableau = false;
@@ -1369,6 +1389,7 @@
   window.addEventListener("popstate", (ev) => {
     const chemin = ev.state?.chemin || cheminDeUrl();
     const lieu = ev.state ? ev.state.lieu : lieuDeUrl();
+    montrerVue("page");
     if (chemin) ouvrirPage(chemin, false, { focus: lieu || null });
   });
 

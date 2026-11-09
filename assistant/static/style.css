@@ -37,7 +37,6 @@
 
   --transition: 130ms ease-out;
   --colonne-gauche: 268px;
-  --colonne-droite: 400px;
   /* Hauteur commune aux controles de la barre du haut : sans elle, les
      selects et les boutons n'ont pas la meme taille et ne s'alignent pas. */
   --hauteur-controle: 30px;
@@ -326,12 +325,21 @@ body.joueurs .app { box-shadow: inset 0 0 0 2px rgba(201, 131, 79, 0.55); }
 .grille {
   flex: 1; min-height: 0;
   display: grid;
-  grid-template-columns: var(--colonne-gauche) minmax(0, 1fr) var(--colonne-droite);
+  grid-template-columns: var(--colonne-gauche) minmax(0, 1fr);
 }
 
 .colonne { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .colonne-gauche { border-right: 1px solid var(--filet); background: var(--fond-2); }
-.colonne-droite { border-left: 1px solid var(--filet); background: var(--fond-2); }
+
+/* La page et l'assistant partagent la meme place : on montre l'un ou l'autre.
+   La page reste montee pendant qu'on parle, la carte garde donc sa vue. */
+.colonne-centre, .colonne-droite { grid-column: 2; grid-row: 1; }
+.colonne-droite { display: none; }
+body.vue-assistant .colonne-droite { display: flex; }
+body.vue-assistant .colonne-centre { display: none; }
+#bouton-assistant[aria-pressed="true"] {
+  color: var(--accent-doux); border-color: var(--accent); background: var(--lueur);
+}
 
 /* --------------------------------------------------- colonne de recherche */
 
@@ -521,14 +529,20 @@ body.joueurs .app { box-shadow: inset 0 0 0 2px rgba(201, 131, 79, 0.55); }
 
 /* ------------------------------------------------------- colonne de droite */
 
+/* La conversation occupe toute la largeur, avec une marge fixe. */
+.colonne-droite { --marge-conv: var(--e8); }
 .droite-barre {
   display: flex; align-items: center; justify-content: space-between; gap: var(--e2);
-  padding: var(--e3) var(--e3) var(--e2);
+  padding: var(--e3) var(--marge-conv) var(--e2);
   border-bottom: 1px solid var(--filet); flex: none;
 }
 .droite-actions { display: flex; align-items: center; gap: var(--e2); }
 
-.conversation { flex: 1; overflow-y: auto; padding: var(--e3); display: flex; flex-direction: column; gap: var(--e3); }
+.conversation {
+  flex: 1; overflow-y: auto;
+  padding: var(--e6) var(--marge-conv) var(--e8);
+  display: flex; flex-direction: column; gap: var(--e4);
+}
 
 .tour { display: flex; flex-direction: column; gap: var(--e1); }
 .tour-role {
@@ -539,7 +553,8 @@ body.joueurs .app { box-shadow: inset 0 0 0 2px rgba(201, 131, 79, 0.55); }
   padding: var(--e3);
   border: 1px solid var(--filet);
   border-radius: var(--r2);
-  font-size: 13.5px;
+  font-size: 14.5px;
+  line-height: 1.6;
   background: var(--surface);
 }
 .tour[data-role="user"] .tour-corps {
@@ -582,7 +597,7 @@ body.joueurs .app { box-shadow: inset 0 0 0 2px rgba(201, 131, 79, 0.55); }
 }
 @keyframes clignote { 50% { opacity: 0; } }
 
-.composeur { flex: none; border-top: 1px solid var(--filet); padding: var(--e2) var(--e3) var(--e3); }
+.composeur { flex: none; border-top: 1px solid var(--filet); padding: var(--e3) var(--marge-conv) var(--e4); }
 .composeur textarea {
   width: 100%; resize: none; min-height: 48px; max-height: 40vh;
   padding: var(--e2) var(--e3);
@@ -596,13 +611,14 @@ body.joueurs .app { box-shadow: inset 0 0 0 2px rgba(201, 131, 79, 0.55); }
 /* -------------------------------------------------------------- reactivite */
 
 @media (max-width: 1280px) {
-  :root { --colonne-gauche: 234px; --colonne-droite: 340px; }
+  :root { --colonne-gauche: 234px; }
   .page { padding: var(--e6) var(--e6) 40vh; }
 }
 
 @media (max-width: 1024px) {
   body { overflow: auto; }
   .grille { grid-template-columns: 1fr; }
+  .colonne-centre, .colonne-droite { grid-column: auto; grid-row: auto; }
   .colonne { max-height: none; }
   .colonne-gauche, .colonne-droite { border: none; border-top: 1px solid var(--filet); }
   .navigation, .page, .conversation { overflow: visible; max-height: none; }
@@ -679,9 +695,8 @@ body.joueurs .proposition, body.joueurs .tour-actions, body.joueurs .prop-tout {
 .carte-hote { flex: 1; min-width: 0; min-height: 0; display: flex; }
 .carte-attente { margin: auto; }
 
-/* Agrandie, la carte prend la place de la colonne de gauche ; la
-   conversation reste a droite, pour poser une question sur ce qu'on voit. */
-body.carte-large .grille { grid-template-columns: 0 minmax(0, 1fr) var(--colonne-droite); }
+/* Agrandie, la carte prend la place de la colonne de gauche. */
+body.carte-large .grille { grid-template-columns: 0 minmax(0, 1fr); }
 body.carte-large .colonne-gauche { visibility: hidden; border: none; }
 
 .carte {

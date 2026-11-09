@@ -156,11 +156,10 @@ Le modèle se change dans la configuration, ou dans un menu de l'interface. À n
 
 ## 10. L'interface
 
-Une seule page, trois zones :
+Une seule page, deux zones :
 
 - **à gauche**, l'arborescence du coffre et le champ de recherche ;
-- **au centre**, la page affichée ;
-- **à droite**, la conversation avec l'assistant.
+- **au centre**, la page affichée, ou la conversation avec l'assistant : le bouton « Assistant » de la barre du haut passe de l'une à l'autre, et ouvrir une page (lien, source citée, carte) ramène à la page.
 
 Trois boutons : le mode joueurs, le choix du modèle, et l'épinglage de la page affichée.
 

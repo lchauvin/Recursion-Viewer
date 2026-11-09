@@ -199,7 +199,9 @@ correct pour une question de regle ou un resume.
 
 Dans ses reponses, l'assistant cite ses sources par des liens cliquables vers
 les pages de l'outil (`[Le Reve](/page/03%20Regles/Le%20Reve)`). Un clic ouvre
-la page dans la colonne centrale : c'est le probleme que cet outil resout.
+la page a la place de la conversation : c'est le probleme que cet outil resout.
+Le bouton « Assistant », en haut, ramene a la conversation ; la page et sa
+carte restent telles qu'on les a laissees.
 
 ## Le coffre
 
