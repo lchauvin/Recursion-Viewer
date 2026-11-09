@@ -1,0 +1,63 @@
+# Configuration de l'assistant de MJ.
+#
+# A copier vers :
+#   Windows  %APPDATA%\assistant-jdr\config.toml
+#   Linux    ~/.config/assistant-jdr/config.toml
+#   macOS    ~/.config/assistant-jdr/config.toml
+#
+# Tout est optionnel : sans ce fichier, l'outil demande le chemin du coffre au
+# premier demarrage et l'enregistre lui-meme.
+
+# Le coffre ouvert au demarrage, par sa cle dans la section [coffres].
+coffre_par_defaut = "recursion"
+
+hote = "127.0.0.1"
+port = 3011
+
+# "claude" (API) ou "ollama" (modele local).
+fournisseur = "claude"
+
+# Profondeur de reflexion du modele : low, medium, high, xhigh, max.
+# Plus haut = plus fin pour improviser une scene, plus lent et plus cher.
+# Ne concerne que Claude.
+effort = "medium"
+
+# Budget de contexte pour un modele SANS outils (Ollama), en caracteres,
+# soit environ 4 caracteres par token. L'outil remplit ce budget avec les
+# pages les plus pertinentes d'abord ; si le coffre tient en entier, il est
+# envoye en entier. A baisser pour un petit modele local : un modele a
+# 8 000 tokens de contexte veut plutot 20000.
+contexte_max = 200000
+
+[claude]
+modele = "claude-opus-5-5"
+# La cle d'API se lit de preference dans la variable d'environnement
+# ANTHROPIC_API_KEY. Ne la mettez ici que si vous ne pouvez pas faire autrement :
+# ce fichier est reecrit par l'outil, qui n'y recopie jamais la cle.
+# cle_api = "sk-ant-..."
+
+[ollama]
+url = "http://localhost:11434"
+# Le nom exact tel que le donne `ollama list`, tag compris :
+#   modele = "llama3.1:8b"
+#   modele = "llama3.2:latest"
+#   modele = "mistral"
+# Le menu « modele » de l'interface liste automatiquement tout ce qu'Ollama a
+# d'installe ; ce reglage n'est que la valeur de depart.
+modele = "llama3.1:8b"
+
+# ---------------------------------------------------------------- les coffres
+#
+# Un coffre = un dossier de fichiers .md. Rien n'y est obligatoire : l'outil
+# exploite les metadonnees, le CLAUDE.md et les sous-dossiers s'il en trouve.
+
+[coffres.recursion]
+chemin = "~/Documents/Recursion"
+nom = "Recursion : l'ere de l'Erosion"
+# Dossier ou l'assistant rangerait ses notes de seance, le jour ou l'ecriture
+# sera autorisee. Lu seulement, pour l'instant.
+dossier_notes = "10 Notes de l assistant"
+
+# [coffres.bac-a-sable]
+# chemin = "~/Documents/Recursion-bac-a-sable"
+# nom = "Bac a sable"

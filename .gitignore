@@ -1,0 +1,16 @@
+# Secrets : les cles d'API ne se versionnent jamais (voir .env.example).
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editeurs et systeme
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

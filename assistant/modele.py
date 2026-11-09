@@ -1,0 +1,423 @@
+"""Les modeles : Claude (API) et Ollama (local), derriere une meme interface.
+
+Chaque modele expose `repondre()`, un generateur d'evenements :
+
+    {"type": "texte",  "texte": "..."}        un fragment de reponse
+    {"type": "outil",  "nom": "...", ...}     le modele a consulte une page
+    {"type": "info",   "texte": "..."}        trace pour l'interface
+    {"type": "erreur", "texte": "..."}        echec, la conversation s'arrete
+    {"type": "fin",    "usage": {...}}        termine
+
+Degradation douce (DESIGN 4) : sans cle d'API et sans Ollama, ces classes se
+declarent indisponibles et expliquent pourquoi, sans empecher la lecture ni la
+recherche de fonctionner.
+"""
+
+from __future__ import annotations
+
+import json
+import urllib.error
+import urllib.request
+from typing import Callable, Iterator
+
+# Streaming : on laisse de la place au modele, les delais HTTP ne comptent pas.
+MAX_TOKENS = 64000
+
+# Fallback serveur en cas de refus d'un classifieur de surete.
+BETA_FALLBACK = "server-side-fallback-2026-07-01"
+
+
+class Modele:
+    """Interface commune. `disponible` dit si le modele peut etre appele."""
+
+    fournisseur = "?"
+
+    def __init__(self, identifiant: str):
+        self.identifiant = identifiant
+        self.raison_indisponible: str | None = None
+
+    @property
+    def disponible(self) -> bool:
+        return self.raison_indisponible is None
+
+    @property
+    def outils_natifs(self) -> bool:
+        """Vrai si le modele sait demander lui-meme les pages dont il a besoin."""
+        return False
+
+    def repondre(
+        self,
+        systeme: str,
+        messages: list[dict],
+        outils: list[dict] | None = None,
+        executer: Callable[[str, dict], str] | None = None,
+    ) -> Iterator[dict]:
+        raise NotImplementedError
+
+    def decrire(self) -> dict:
+        return {
+            "fournisseur": self.fournisseur,
+            "identifiant": self.identifiant,
+            "disponible": self.disponible,
+            "raison": self.raison_indisponible,
+            "outils_natifs": self.outils_natifs,
+        }
+
+
+# --------------------------------------------------------------------- Claude
+
+
+class ModeleClaude(Modele):
+    fournisseur = "claude"
+
+    def __init__(self, identifiant: str, cle_api: str | None, effort: str = "medium"):
+        super().__init__(identifiant)
+        self.effort = effort
+        self._client = None
+        try:
+            import anthropic  # noqa: F401
+        except ImportError:
+            self.raison_indisponible = (
+                "La bibliotheque anthropic n'est pas installee. "
+                "Installer avec : pip install anthropic"
+            )
+            return
+        if not cle_api:
+            self.raison_indisponible = (
+                "Aucune cle d'API. Definir ANTHROPIC_API_KEY, ou cle_api dans la "
+                "section [claude] du fichier de configuration."
+            )
+            return
+        import anthropic
+
+        self._anthropic = anthropic
+        self._client = anthropic.Anthropic(api_key=cle_api)
+        # Si le SDK ou l'API refuse le fallback serveur, on repasse sans, une
+        # fois pour toutes (voir _entrer).
+        self._beta_actif = True
+
+    @property
+    def outils_natifs(self) -> bool:
+        return True
+
+    def repondre(
+        self,
+        systeme: str,
+        messages: list[dict],
+        outils: list[dict] | None = None,
+        executer: Callable[[str, dict], str] | None = None,
+    ) -> Iterator[dict]:
+        if not self.disponible:
+            yield {"type": "erreur", "texte": self.raison_indisponible or "modele indisponible"}
+            return
+
+        anthropic = self._anthropic
+        # Le prompt systeme est stable d'un message a l'autre : on le met en cache.
+        blocs_systeme = [
+            {"type": "text", "text": systeme, "cache_control": {"type": "ephemeral"}}
+        ]
+        conversation = list(messages)
+        usage_total = {"entree": 0, "sortie": 0, "cache_lu": 0}
+        tours = 0
+
+        while True:
+            tours += 1
+            if tours > 12:
+                yield {
+                    "type": "erreur",
+                    "texte": "Trop d'aller-retours avec le coffre ; reponse interrompue.",
+                }
+                return
+            try:
+                message = yield from self._un_tour(blocs_systeme, conversation, outils, usage_total)
+            except anthropic.APIStatusError as err:
+                yield {"type": "erreur", "texte": _message_erreur(err)}
+                return
+            except anthropic.APIConnectionError as err:
+                yield {"type": "erreur", "texte": "Connexion a l'API impossible : %s" % err}
+                return
+            except Exception as err:  # une erreur de modele ne doit pas tuer le serveur
+                yield {"type": "erreur", "texte": "Erreur inattendue : %s" % err}
+                return
+
+            if message.stop_reason == "refusal":
+                details = getattr(message, "stop_details", None)
+                categorie = getattr(details, "category", None) or "non precisee"
+                yield {
+                    "type": "erreur",
+                    "texte": "Le modele a decline la demande (categorie : %s)." % categorie,
+                }
+                return
+
+            if message.stop_reason == "pause_turn":
+                conversation.append({"role": "assistant", "content": message.content})
+                continue
+
+            if message.stop_reason != "tool_use":
+                yield {"type": "fin", "usage": usage_total}
+                return
+
+            appels = [b for b in message.content if getattr(b, "type", "") == "tool_use"]
+            conversation.append({"role": "assistant", "content": message.content})
+
+            resultats = []
+            for appel in appels:
+                entree = appel.input if isinstance(appel.input, dict) else {}
+                yield {"type": "outil", "nom": appel.name, "entree": entree}
+                if executer is None:
+                    texte = "Outil indisponible."
+                    erreur = True
+                else:
+                    try:
+                        texte = executer(appel.name, entree)
+                        erreur = False
+                    except Exception as err:
+                        texte = "Echec de l'outil : %s" % err
+                        erreur = True
+                bloc = {
+                    "type": "tool_result",
+                    "tool_use_id": appel.id,
+                    "content": texte,
+                }
+                if erreur:
+                    bloc["is_error"] = True
+                resultats.append(bloc)
+            # Tous les resultats dans un seul message utilisateur.
+            conversation.append({"role": "user", "content": resultats})
+
+    def _un_tour(self, blocs_systeme, conversation, outils, usage_total):
+        """Un appel en streaming. Emet les fragments de texte, renvoie le message."""
+        parametres = {
+            "model": self.identifiant,
+            "max_tokens": MAX_TOKENS,
+            "system": blocs_systeme,
+            "messages": conversation,
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": self.effort},
+        }
+        if outils:
+            # Les entrees d'outil sont minuscules (un nom de page) : pas besoin de
+            # streaming d'entree, et l'API garde ainsi sa validation de schema.
+            parametres["tools"] = outils
+
+        flux = None
+        try:
+            flux = self._entrer(parametres)
+            for fragment in flux.text_stream:
+                if fragment:
+                    yield {"type": "texte", "texte": fragment}
+            message = flux.get_final_message()
+        finally:
+            if flux is not None:
+                flux.close()
+
+        usage = getattr(message, "usage", None)
+        if usage is not None:
+            usage_total["entree"] += getattr(usage, "input_tokens", 0) or 0
+            usage_total["sortie"] += getattr(usage, "output_tokens", 0) or 0
+            usage_total["cache_lu"] += getattr(usage, "cache_read_input_tokens", 0) or 0
+        return message
+
+    def _entrer(self, parametres: dict):
+        """Ouvre le flux, avec le fallback serveur en cas de refus de surete.
+
+        La requete HTTP part a l'entree du gestionnaire de contexte, pas a
+        l'appel : c'est donc ici, et pas plus tot, qu'un SDK trop ancien ou une
+        API qui ignore le fallback se manifeste. On retombe alors sur l'appel
+        ordinaire, definitivement pour cette instance.
+        """
+        if self._beta_actif:
+            try:
+                return self._client.beta.messages.stream(
+                    betas=[BETA_FALLBACK], fallbacks="default", **parametres
+                ).__enter__()
+            except TypeError:
+                self._beta_actif = False
+            except self._anthropic.BadRequestError as err:
+                if not _refus_de_parametre(err):
+                    raise
+                self._beta_actif = False
+        return self._client.messages.stream(**parametres).__enter__()
+
+
+def _refus_de_parametre(err) -> bool:
+    """Vrai si un 400 porte sur le fallback serveur ou sur l'en-tete beta."""
+    texte = str(getattr(err, "message", "") or err).lower()
+    return "fallback" in texte or "beta" in texte
+
+
+def _message_erreur(err) -> str:
+    code = getattr(err, "status_code", "?")
+    if code == 401:
+        return "Cle d'API refusee (401). Verifier ANTHROPIC_API_KEY."
+    if code == 429:
+        return "Limite de debit atteinte (429). Reessayer dans un instant."
+    if code == 404:
+        return "Modele inconnu (404) : %s" % getattr(err, "message", err)
+    return "Erreur de l'API (%s) : %s" % (code, getattr(err, "message", err))
+
+
+# --------------------------------------------------------------------- Ollama
+
+
+class ModeleOllama(Modele):
+    """Modele local. Pas d'outils : le contexte est choisi avant l'appel."""
+
+    fournisseur = "ollama"
+
+    # Un nom comme « localhost » resout en IPv6 puis en IPv4, et chaque essai
+    # attend ce delai : le garder court, sinon tester une adresse morte fige
+    # l'interface plusieurs secondes.
+    DELAI_SONDE = 1.2
+
+    def __init__(
+        self,
+        identifiant: str,
+        url: str,
+        cle_api: str | None = None,
+        delai: float | None = None,
+    ):
+        super().__init__(identifiant)
+        self.url = url.rstrip("/")
+        # Ollama local n'en demande pas ; Ollama Cloud et les instances
+        # derriere une authentification, si.
+        self.cle_api = cle_api or None
+        self.refuse = False
+        # Une seule sonde : elle dit a la fois si Ollama repond et ce qu'il a.
+        self._modeles = self._sonder(delai if delai is not None else self.DELAI_SONDE)
+        if self._modeles is None and not self.raison_indisponible:
+            self.raison_indisponible = (
+                "Ollama ne repond pas sur %s. Le lancer avec : ollama serve" % self.url
+            )
+
+    def _entetes(self) -> dict[str, str]:
+        entetes = {"Content-Type": "application/json"}
+        if self.cle_api:
+            entetes["Authorization"] = "Bearer " + self.cle_api
+        return entetes
+
+    def _sonder(self, delai: float) -> list[str] | None:
+        """La liste des modeles installes, ou None si Ollama ne repond pas."""
+        requete = urllib.request.Request(
+            self.url + "/api/tags", headers=self._entetes(), method="GET"
+        )
+        try:
+            with urllib.request.urlopen(requete, timeout=delai) as reponse:
+                if reponse.status != 200:
+                    return None
+                brut = json.loads(reponse.read().decode("utf-8"))
+        except urllib.error.HTTPError as err:
+            if err.code in (401, 403):
+                self.raison_indisponible = (
+                    "Ollama a refuse la cle d'API (%s) sur %s. Verifier "
+                    "OLLAMA_API_KEY dans le fichier .env." % (err.code, self.url)
+                    if self.cle_api
+                    else "Ollama demande une cle d'API (%s) sur %s. Definir "
+                    "OLLAMA_API_KEY dans le fichier .env." % (err.code, self.url)
+                )
+                self.refuse = True
+            return None
+        except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+            return None
+        return sorted(str(m.get("name", "")) for m in brut.get("models", []) if m.get("name"))
+
+    def modeles_disponibles(self) -> list[str]:
+        return list(self._modeles or [])
+
+    def repondre(
+        self,
+        systeme: str,
+        messages: list[dict],
+        outils: list[dict] | None = None,
+        executer: Callable[[str, dict], str] | None = None,
+    ) -> Iterator[dict]:
+        if not self.disponible:
+            yield {"type": "erreur", "texte": self.raison_indisponible or "modele indisponible"}
+            return
+
+        charge = {
+            "model": self.identifiant,
+            "stream": True,
+            "messages": [{"role": "system", "content": systeme}]
+            + [
+                {"role": m["role"], "content": _texte_simple(m.get("content"))}
+                for m in messages
+            ],
+        }
+        requete = urllib.request.Request(
+            self.url + "/api/chat",
+            data=json.dumps(charge).encode("utf-8"),
+            headers=self._entetes(),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(requete, timeout=600) as reponse:
+                for ligne in reponse:
+                    ligne = ligne.strip()
+                    if not ligne:
+                        continue
+                    try:
+                        bloc = json.loads(ligne.decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                    if bloc.get("error"):
+                        yield {"type": "erreur", "texte": str(bloc["error"])}
+                        return
+                    fragment = (bloc.get("message") or {}).get("content") or ""
+                    if fragment:
+                        yield {"type": "texte", "texte": fragment}
+                    if bloc.get("done"):
+                        break
+        except urllib.error.HTTPError as err:
+            if err.code in (401, 403):
+                yield {
+                    "type": "erreur",
+                    "texte": (
+                        "Ollama a refuse la cle d'API (%s). Verifier OLLAMA_API_KEY "
+                        "dans le fichier .env, puis relancer le serveur." % err.code
+                        if self.cle_api
+                        else "Ollama demande une cle d'API (%s). Definir OLLAMA_API_KEY "
+                        "dans le fichier .env, puis relancer le serveur." % err.code
+                    ),
+                }
+                return
+            detail = ""
+            try:
+                detail = err.read().decode("utf-8", "replace")[:300]
+            except Exception:
+                pass
+            yield {
+                "type": "erreur",
+                "texte": "Ollama a repondu %s. %s" % (err.code, detail),
+            }
+            return
+        except (urllib.error.URLError, OSError) as err:
+            yield {"type": "erreur", "texte": "Ollama injoignable : %s" % err}
+            return
+
+        yield {"type": "fin", "usage": {}}
+
+
+def _texte_simple(contenu) -> str:
+    """Ollama n'accepte que du texte : on aplatit les blocs de contenu."""
+    if isinstance(contenu, str):
+        return contenu
+    if isinstance(contenu, list):
+        morceaux = []
+        for bloc in contenu:
+            if isinstance(bloc, dict):
+                if bloc.get("type") == "text":
+                    morceaux.append(str(bloc.get("text", "")))
+                elif bloc.get("type") == "tool_result":
+                    morceaux.append(str(bloc.get("content", "")))
+            elif isinstance(bloc, str):
+                morceaux.append(bloc)
+        return "\n\n".join(m for m in morceaux if m)
+    return ""
+
+
+def construire(cfg) -> Modele:
+    """Construit le modele decrit par la configuration."""
+    if cfg.fournisseur == "ollama":
+        return ModeleOllama(cfg.modele_ollama, cfg.ollama_url, cfg.cle_ollama)
+    return ModeleClaude(cfg.modele_claude, cfg.cle_api, cfg.effort)

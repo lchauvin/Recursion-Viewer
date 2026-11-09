@@ -1,0 +1,12 @@
+{
+  "name": "Recursion - Assistant de MJ",
+  "services": [
+    {
+      "name": "Assistant de MJ",
+      "type": "Python stdlib HTTP",
+      "port": 3011,
+      "command": "py -m assistant --sans-navigateur --port 3011",
+      "cwd": "."
+    }
+  ]
+}

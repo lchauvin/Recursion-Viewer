@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assistant de MJ</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=Barlow:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-pret="non">
+
+<!-- Page de demarrage : affichee tant qu'aucun coffre n'est connu. -->
+<section id="amorce" class="amorce" hidden>
+  <div class="amorce-carte">
+    <span class="mk mk-tl">+</span><span class="mk mk-tr">+</span>
+    <span class="mk mk-bl">+</span><span class="mk mk-br">+</span>
+    <p class="etiquette">Premier demarrage</p>
+    <h1>Ou se trouve le coffre ?</h1>
+    <p class="amorce-texte">
+      Indique le dossier qui contient les fichiers <code>.md</code>. Le chemin sera
+      enregistre dans la configuration ; l'outil n'ecrit jamais dans le coffre.
+    </p>
+    <form id="amorce-form">
+      <input id="amorce-chemin" type="text" spellcheck="false"
+             placeholder="C:\Users\...\Documents\MonCoffre" autocomplete="off">
+      <button type="submit" class="bouton bouton-primaire">Ouvrir</button>
+    </form>
+    <p id="amorce-erreur" class="amorce-erreur" hidden></p>
+  </div>
+</section>
+
+<div id="app" class="app" hidden>
+
+  <header class="barre">
+    <div class="marque">
+      <svg class="sigle" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="3.2"></circle>
+        <circle cx="12" cy="12" r="7.4"></circle>
+        <circle cx="12" cy="12" r="11"></circle>
+      </svg>
+      <div class="marque-texte">
+        <span class="marque-titre">Assistant de MJ</span>
+        <span id="coffre-nom" class="marque-sous">—</span>
+      </div>
+    </div>
+
+    <div class="barre-actions">
+      <label class="selecteur" title="Coffre ouvert">
+        <span class="etiquette">coffre</span>
+        <select id="choix-coffre"></select>
+      </label>
+      <label class="selecteur" title="Modele utilise par l'assistant">
+        <span class="etiquette">modele</span>
+        <select id="choix-modele"></select>
+      </label>
+      <button id="bouton-carte" class="bouton" title="Ouvrir la carte du coffre" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true" class="icone">
+          <circle cx="12" cy="12" r="2.4"></circle>
+          <circle cx="12" cy="12" r="8.6" stroke-dasharray="2 3"></circle>
+          <circle cx="18.1" cy="5.9" r="1.6"></circle>
+        </svg>
+        Carte
+      </button>
+      <button id="bouton-joueurs" class="bouton" aria-pressed="false"
+              title="Masquer les pages et les encadres reserves au MJ">
+        <span class="voyant"></span> Mode joueurs
+      </button>
+      <button id="bouton-parametres" class="bouton bouton-icone" title="Parametres du modele">
+        <svg viewBox="0 0 24 24" aria-hidden="true" class="icone">
+          <circle cx="12" cy="12" r="3.2"></circle>
+          <path d="M12 2.6v3M12 18.4v3M21.4 12h-3M5.6 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4L5.3 5.3"></path>
+        </svg>
+        <span class="sr">Parametres</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="grille">
+
+    <!-- Colonne de gauche : recherche et arborescence -->
+    <aside class="colonne colonne-gauche">
+      <div class="recherche">
+        <input id="champ-recherche" type="search" placeholder="Chercher dans le coffre…"
+               spellcheck="false" autocomplete="off">
+        <div class="filtres">
+          <select id="filtre-type"><option value="">tous les types</option></select>
+          <select id="filtre-visibilite">
+            <option value="">toute visibilite</option>
+            <option value="mj">mj</option>
+            <option value="joueurs">joueurs</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="epingles-bloc" class="bloc" hidden>
+        <p class="etiquette">Epinglees</p>
+        <ul id="epingles" class="liste-epingles"></ul>
+      </div>
+
+      <nav id="navigation" class="navigation" aria-label="Arborescence du coffre"></nav>
+
+      <footer class="pied-gauche">
+        <span id="compte-pages" class="etiquette">—</span>
+      </footer>
+    </aside>
+
+    <!-- Colonne centrale : la page -->
+    <section class="colonne colonne-centre">
+      <div class="centre-barre">
+        <nav id="fil" class="fil" aria-label="Chemin de la page"></nav>
+        <div class="centre-actions">
+          <button id="bouton-sur-carte" class="bouton bouton-petit" title="Montrer ce lieu sur la carte" hidden>Sur la carte</button>
+          <button id="bouton-vue" class="bouton bouton-petit" title="Basculer entre la carte et le tableau de la page" hidden>Tableau</button>
+          <button id="bouton-epingle" class="bouton bouton-petit" title="Epingler : toujours fournie a l'assistant">Epingler</button>
+          <a id="lien-brut" class="bouton bouton-petit" href="#" target="_blank" rel="noreferrer">Source</a>
+        </div>
+      </div>
+      <article id="page" class="page" tabindex="-1"></article>
+    </section>
+
+    <!-- Colonne de droite : la conversation -->
+    <section class="colonne colonne-droite">
+      <div class="droite-barre">
+        <p class="etiquette">Assistant</p>
+        <div class="droite-actions">
+          <span id="etat-modele" class="pastille">—</span>
+          <button id="bouton-vider" class="bouton bouton-petit" title="Effacer la conversation">Effacer</button>
+        </div>
+      </div>
+      <div id="conversation" class="conversation" aria-live="polite"></div>
+      <form id="form-question" class="composeur">
+        <textarea id="question" rows="2" placeholder="Une question de regle, un PNJ a improviser, une scene a preparer…"
+                  spellcheck="false"></textarea>
+        <div class="composeur-pied">
+          <span class="indice">Entree pour envoyer · Maj+Entree pour une nouvelle ligne</span>
+          <button id="bouton-envoyer" type="submit" class="bouton bouton-primaire bouton-petit">Envoyer</button>
+        </div>
+      </form>
+    </section>
+
+  </main>
+</div>
+
+<!-- Parametres du modele -->
+<section id="parametres" class="voile" hidden>
+  <div class="panneau" role="dialog" aria-modal="true" aria-labelledby="parametres-titre">
+    <span class="mk mk-tl">+</span><span class="mk mk-tr">+</span>
+    <span class="mk mk-bl">+</span><span class="mk mk-br">+</span>
+
+    <header class="panneau-tete">
+      <div>
+        <p class="etiquette">Parametres</p>
+        <h2 id="parametres-titre">Le modele de l'assistant</h2>
+      </div>
+      <button id="fermer-parametres" class="bouton bouton-petit" title="Fermer (Echap)">Fermer</button>
+    </header>
+
+    <form id="form-parametres" class="panneau-corps">
+
+      <div class="champ">
+        <span class="etiquette">Fournisseur</span>
+        <div class="bascule">
+          <label><input type="radio" name="fournisseur" value="claude"> Claude (API)</label>
+          <label><input type="radio" name="fournisseur" value="ollama"> Ollama (local)</label>
+        </div>
+      </div>
+
+      <!-- Claude -->
+      <div class="groupe" data-pour="claude">
+        <label class="champ">
+          <span class="etiquette">Modele Claude</span>
+          <input id="p-modele-claude" type="text" list="liste-claude" spellcheck="false" autocomplete="off">
+          <datalist id="liste-claude"></datalist>
+          <span class="aide">L'identifiant exact du modele, par exemple <code>claude-opus-5-5</code>.</span>
+        </label>
+
+        <label class="champ">
+          <span class="etiquette">Effort de reflexion</span>
+          <select id="p-effort"></select>
+          <span class="aide">Plus haut : plus fin pour improviser une scene, plus lent et plus cher.</span>
+        </label>
+
+        <div class="champ">
+          <span class="etiquette">Cle d'API</span>
+          <p id="p-cle" class="pastille">—</p>
+          <span class="aide">
+            La cle ne se saisit pas ici et n'est jamais ecrite dans la configuration par
+            l'outil. Definissez <code>ANTHROPIC_API_KEY</code> dans vos variables
+            d'environnement, puis relancez le serveur.
+          </span>
+        </div>
+      </div>
+
+      <!-- Ollama -->
+      <div class="groupe" data-pour="ollama">
+        <label class="champ">
+          <span class="etiquette">URL du serveur Ollama</span>
+          <span class="champ-rangee">
+            <input id="p-url" type="text" spellcheck="false" autocomplete="off"
+                   placeholder="http://localhost:11434">
+            <button id="p-tester" type="button" class="bouton bouton-petit">Tester</button>
+          </span>
+          <span class="aide">
+            Mettez l'adresse d'une autre machine pour joindre un Ollama du reseau.
+          </span>
+        </label>
+
+        <label class="champ">
+          <span class="etiquette">Modele Ollama</span>
+          <input id="p-modele-ollama" type="text" list="liste-ollama" spellcheck="false"
+                 autocomplete="off" placeholder="llama3.1:8b">
+          <datalist id="liste-ollama"></datalist>
+          <span class="aide">
+            Le nom exact rendu par <code>ollama list</code>, tag compris.
+          </span>
+        </label>
+
+        <div class="champ">
+          <span class="etiquette">Cle d'API Ollama</span>
+          <p id="p-cle-ollama" class="pastille">—</p>
+          <span class="aide">
+            Inutile pour un Ollama local ; requise pour Ollama Cloud (les modeles
+            en <code>:cloud</code>) ou une instance protegee. Elle se lit dans
+            <code>OLLAMA_API_KEY</code>, depuis vos variables d'environnement ou
+            le fichier <code>.env</code> a la racine du projet — jamais saisie ni
+            enregistree ici. Relancez le serveur apres l'avoir changee.
+          </span>
+        </div>
+
+        <p id="p-resultat" class="resultat" hidden></p>
+      </div>
+
+      <p id="p-erreur" class="resultat" data-ton="alerte" hidden></p>
+
+      <footer class="panneau-pied">
+        <dl class="infos">
+          <div><dt>Coffre</dt><dd id="p-coffre">—</dd></div>
+          <div><dt>Adresse</dt><dd id="p-adresse">—</dd></div>
+          <div><dt>Configuration</dt><dd id="p-config">—</dd></div>
+        </dl>
+        <div class="panneau-actions">
+          <button type="button" id="p-annuler" class="bouton bouton-petit">Annuler</button>
+          <button type="submit" class="bouton bouton-primaire bouton-petit">Enregistrer</button>
+        </div>
+      </footer>
+    </form>
+  </div>
+</section>
+
+<script src="/static/carte.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
