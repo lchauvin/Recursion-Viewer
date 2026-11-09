@@ -136,10 +136,17 @@ class Coffre:
     chemin: Path
     nom: str
     dossier_notes: str = DEFAUTS["dossier_notes"]
+    # Les dossiers ou l'assistant peut proposer d'ecrire. Vide : le seul
+    # dossier de notes. Jamais code en dur : chaque coffre declare les siens.
+    dossiers_ecriture: list[str] = field(default_factory=list)
 
     @property
     def existe(self) -> bool:
         return self.chemin.is_dir()
+
+    @property
+    def zones_ecriture(self) -> list[str]:
+        return list(self.dossiers_ecriture) or [self.dossier_notes]
 
 
 @dataclass
@@ -153,6 +160,8 @@ class Config:
     effort: str = DEFAUTS["effort"]
     modele_ollama: str = DEFAUTS["modele_ollama"]
     ollama_url: str = DEFAUTS["ollama_url"]
+    # Outils pour un modele Ollama : « auto » suit ce que le modele declare.
+    ollama_outils: str = "auto"
     contexte_max: int = DEFAUTS["contexte_max"]
     cle_api: str | None = None
     source_cle_api: str = "absente"
@@ -192,6 +201,8 @@ class Config:
         ollama = brut.get("ollama") or {}
         cfg.modele_ollama = str(ollama.get("modele", cfg.modele_ollama))
         cfg.ollama_url = str(ollama.get("url", cfg.ollama_url)).rstrip("/")
+        outils = str(ollama.get("outils", "auto")).strip().lower()
+        cfg.ollama_outils = outils if outils in ("auto", "oui", "non") else "auto"
 
         for cle, bloc in (brut.get("coffres") or {}).items():
             if not isinstance(bloc, dict) or not bloc.get("chemin"):
@@ -201,6 +212,9 @@ class Config:
                 chemin=_resoudre(bloc["chemin"]),
                 nom=str(bloc.get("nom") or cle),
                 dossier_notes=str(bloc.get("dossier_notes") or DEFAUTS["dossier_notes"]),
+                dossiers_ecriture=[
+                    str(d) for d in (bloc.get("dossiers_ecriture") or []) if str(d).strip()
+                ],
             )
         defaut = brut.get("coffre_par_defaut")
         if defaut in cfg.coffres:
@@ -303,6 +317,10 @@ class Config:
             "[ollama]",
             f'url = "{self.ollama_url}"',
             f'modele = "{self.modele_ollama}"',
+        ]
+        if self.ollama_outils != "auto":
+            lignes.append(f'outils = "{self.ollama_outils}"')
+        lignes += [
             "",
         ]
         for coffre in self.coffres.values():
@@ -311,8 +329,12 @@ class Config:
                 "chemin = " + _toml_str(coffre.chemin),
                 "nom = " + _toml_str(coffre.nom),
                 "dossier_notes = " + _toml_str(coffre.dossier_notes),
-                "",
             ]
+            if coffre.dossiers_ecriture:
+                lignes.append(
+                    "dossiers_ecriture = [" + ", ".join(_toml_str(d) for d in coffre.dossiers_ecriture) + "]"
+                )
+            lignes.append("")
         cible.write_text("\n".join(lignes), encoding="utf-8")
         self.source = cible
         return cible

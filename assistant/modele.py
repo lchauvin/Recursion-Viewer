@@ -129,7 +129,9 @@ class ModeleClaude(Modele):
                 }
                 return
             try:
-                message = yield from self._un_tour(blocs_systeme, conversation, outils, usage_total)
+                message = yield from self._un_tour(
+                    blocs_systeme, conversation, outils, usage_total, "\n\n" if tours > 1 else ""
+                )
             except anthropic.APIStatusError as err:
                 yield {"type": "erreur", "texte": _message_erreur(err)}
                 return
@@ -185,8 +187,9 @@ class ModeleClaude(Modele):
             # Tous les resultats dans un seul message utilisateur.
             conversation.append({"role": "user", "content": resultats})
 
-    def _un_tour(self, blocs_systeme, conversation, outils, usage_total):
-        """Un appel en streaming. Emet les fragments de texte, renvoie le message."""
+    def _un_tour(self, blocs_systeme, conversation, outils, usage_total, prefixe=""):
+        """Un appel en streaming. Emet les fragments de texte, renvoie le message.
+        `prefixe` precede le premier fragment : il separe le texte de deux tours."""
         parametres = {
             "model": self.identifiant,
             "max_tokens": MAX_TOKENS,
@@ -196,8 +199,8 @@ class ModeleClaude(Modele):
             "output_config": {"effort": self.effort},
         }
         if outils:
-            # Les entrees d'outil sont minuscules (un nom de page) : pas besoin de
-            # streaming d'entree, et l'API garde ainsi sa validation de schema.
+            # Pas de streaming fin des entrees d'outil : meme une page proposee
+            # tient sans peine, et l'API garde ainsi sa validation de schema.
             parametres["tools"] = outils
 
         flux = None
@@ -205,6 +208,8 @@ class ModeleClaude(Modele):
             flux = self._entrer(parametres)
             for fragment in flux.text_stream:
                 if fragment:
+                    if prefixe:
+                        fragment, prefixe = prefixe + fragment.lstrip(), ""
                     yield {"type": "texte", "texte": fragment}
             message = flux.get_final_message()
         finally:
@@ -261,7 +266,15 @@ def _message_erreur(err) -> str:
 
 
 class ModeleOllama(Modele):
-    """Modele local. Pas d'outils : le contexte est choisi avant l'appel."""
+    """Modele servi par Ollama, local ou dans le cloud.
+
+    Un modele qui declare la capacite `tools` (Ollama la donne dans
+    /api/show) recoit les outils, comme Claude : il demande les pages dont il a
+    besoin et propose ses ecritures par outil. Sinon, le contexte est choisi
+    avant l'appel et le coffre lui est fourni d'avance. Le reglage
+    `[ollama] outils` force l'un ou l'autre (« oui », « non ») ; par defaut,
+    « auto » suit ce que declare le modele.
+    """
 
     fournisseur = "ollama"
 
@@ -269,6 +282,8 @@ class ModeleOllama(Modele):
     # attend ce delai : le garder court, sinon tester une adresse morte fige
     # l'interface plusieurs secondes.
     DELAI_SONDE = 1.2
+    DELAI_CAPACITES = 6
+    TOURS_MAX = 12
 
     def __init__(
         self,
@@ -276,6 +291,7 @@ class ModeleOllama(Modele):
         url: str,
         cle_api: str | None = None,
         delai: float | None = None,
+        outils: str = "auto",
     ):
         super().__init__(identifiant)
         self.url = url.rstrip("/")
@@ -283,12 +299,29 @@ class ModeleOllama(Modele):
         # derriere une authentification, si.
         self.cle_api = cle_api or None
         self.refuse = False
+        self.capacites: list[str] = []
+        self.reglage_outils = outils if outils in ("auto", "oui", "non") else "auto"
         # Une seule sonde : elle dit a la fois si Ollama repond et ce qu'il a.
         self._modeles = self._sonder(delai if delai is not None else self.DELAI_SONDE)
         if self._modeles is None and not self.raison_indisponible:
             self.raison_indisponible = (
                 "Ollama ne repond pas sur %s. Le lancer avec : ollama serve" % self.url
             )
+        if self.disponible and self.reglage_outils == "auto":
+            self.capacites = self._capacites()
+
+    @property
+    def outils_natifs(self) -> bool:
+        if self.reglage_outils == "oui":
+            return True
+        if self.reglage_outils == "non":
+            return False
+        return "tools" in self.capacites
+
+    def decrire(self) -> dict:
+        description = super().decrire()
+        description["capacites"] = list(self.capacites)
+        return description
 
     def _entetes(self) -> dict[str, str]:
         entetes = {"Content-Type": "application/json"}
@@ -321,6 +354,25 @@ class ModeleOllama(Modele):
             return None
         return sorted(str(m.get("name", "")) for m in brut.get("models", []) if m.get("name"))
 
+    def _capacites(self) -> list[str]:
+        """Ce que le modele declare savoir faire (« tools », « thinking »...).
+
+        En cas d'echec, une liste vide : le modele est alors traite sans
+        outils, ce qui marche toujours.
+        """
+        requete = urllib.request.Request(
+            self.url + "/api/show",
+            data=json.dumps({"model": self.identifiant}).encode("utf-8"),
+            headers=self._entetes(),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(requete, timeout=self.DELAI_CAPACITES) as reponse:
+                brut = json.loads(reponse.read().decode("utf-8"))
+        except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+            return []
+        return [str(c) for c in (brut.get("capabilities") or []) if c]
+
     def modeles_disponibles(self) -> list[str]:
         return list(self._modeles or [])
 
@@ -335,21 +387,60 @@ class ModeleOllama(Modele):
             yield {"type": "erreur", "texte": self.raison_indisponible or "modele indisponible"}
             return
 
-        charge = {
-            "model": self.identifiant,
-            "stream": True,
-            "messages": [{"role": "system", "content": systeme}]
-            + [
-                {"role": m["role"], "content": _texte_simple(m.get("content"))}
-                for m in messages
-            ],
+        conversation = [{"role": "system", "content": systeme}] + [
+            {"role": m["role"], "content": _texte_simple(m.get("content"))}
+            for m in messages
+        ]
+        definitions = _outils_ollama(outils) if outils and self.outils_natifs else None
+
+        deja_ecrit = False
+        for _ in range(self.TOURS_MAX):
+            charge = {"model": self.identifiant, "stream": True, "messages": conversation}
+            if definitions:
+                charge["tools"] = definitions
+            # Le texte de chaque tour suit celui du precedent : sans separation,
+            # « je lis la page.Voici » se colle.
+            resultat = yield from self._un_tour(charge, "\n\n" if deja_ecrit else "")
+            if resultat is None:
+                return  # l'erreur a deja ete emise
+            texte, appels = resultat
+            deja_ecrit = deja_ecrit or bool(texte.strip())
+            if not appels:
+                yield {"type": "fin", "usage": {}}
+                return
+
+            conversation.append({"role": "assistant", "content": texte, "tool_calls": appels})
+            for appel in appels:
+                fonction = appel.get("function") or {}
+                nom = str(fonction.get("name") or "")
+                entree = _arguments(fonction.get("arguments"))
+                yield {"type": "outil", "nom": nom, "entree": entree}
+                if executer is None:
+                    sortie = "Outil indisponible."
+                else:
+                    try:
+                        sortie = executer(nom, entree)
+                    except Exception as err:  # un outil ne doit pas tuer la conversation
+                        sortie = "Echec de l'outil : %s" % err
+                conversation.append({"role": "tool", "tool_name": nom, "content": sortie})
+
+        yield {
+            "type": "erreur",
+            "texte": "Trop d'aller-retours avec le coffre ; reponse interrompue.",
         }
+
+    def _un_tour(self, charge: dict, prefixe: str = ""):
+        """Un appel en streaming. Emet le texte ; renvoie (texte, appels d'outil),
+        ou None apres avoir emis une erreur. `prefixe` precede le premier
+        fragment de texte, s'il y en a un."""
         requete = urllib.request.Request(
             self.url + "/api/chat",
             data=json.dumps(charge).encode("utf-8"),
             headers=self._entetes(),
             method="POST",
         )
+        morceaux: list[str] = []
+        appels: list[dict] = []
         try:
             with urllib.request.urlopen(requete, timeout=600) as reponse:
                 for ligne in reponse:
@@ -362,10 +453,19 @@ class ModeleOllama(Modele):
                         continue
                     if bloc.get("error"):
                         yield {"type": "erreur", "texte": str(bloc["error"])}
-                        return
-                    fragment = (bloc.get("message") or {}).get("content") or ""
+                        return None
+                    message = bloc.get("message") or {}
+                    # Le raisonnement (« thinking ») n'est pas montre : seule la
+                    # reponse l'est.
+                    fragment = message.get("content") or ""
                     if fragment:
+                        if not morceaux and prefixe:
+                            fragment = prefixe + fragment.lstrip()
+                        morceaux.append(fragment)
                         yield {"type": "texte", "texte": fragment}
+                    for appel in message.get("tool_calls") or []:
+                        if isinstance(appel, dict):
+                            appels.append(appel)
                     if bloc.get("done"):
                         break
         except urllib.error.HTTPError as err:
@@ -380,7 +480,7 @@ class ModeleOllama(Modele):
                         "dans le fichier .env, puis relancer le serveur." % err.code
                     ),
                 }
-                return
+                return None
             detail = ""
             try:
                 detail = err.read().decode("utf-8", "replace")[:300]
@@ -390,12 +490,39 @@ class ModeleOllama(Modele):
                 "type": "erreur",
                 "texte": "Ollama a repondu %s. %s" % (err.code, detail),
             }
-            return
+            return None
         except (urllib.error.URLError, OSError) as err:
             yield {"type": "erreur", "texte": "Ollama injoignable : %s" % err}
-            return
+            return None
+        return "".join(morceaux), appels
 
-        yield {"type": "fin", "usage": {}}
+
+def _outils_ollama(outils: list[dict]) -> list[dict]:
+    """Les definitions d'outils au format d'Ollama (celui des « functions »)."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": o["name"],
+                "description": o.get("description", ""),
+                "parameters": o.get("input_schema") or {"type": "object", "properties": {}},
+            },
+        }
+        for o in outils
+    ]
+
+
+def _arguments(brut) -> dict:
+    """Les arguments d'un appel : un objet, ou parfois une chaine JSON."""
+    if isinstance(brut, dict):
+        return brut
+    if isinstance(brut, str):
+        try:
+            valeur = json.loads(brut)
+        except json.JSONDecodeError:
+            return {}
+        return valeur if isinstance(valeur, dict) else {}
+    return {}
 
 
 def _texte_simple(contenu) -> str:
@@ -419,5 +546,8 @@ def _texte_simple(contenu) -> str:
 def construire(cfg) -> Modele:
     """Construit le modele decrit par la configuration."""
     if cfg.fournisseur == "ollama":
-        return ModeleOllama(cfg.modele_ollama, cfg.ollama_url, cfg.cle_ollama)
+        return ModeleOllama(
+            cfg.modele_ollama, cfg.ollama_url, cfg.cle_ollama,
+            outils=getattr(cfg, "ollama_outils", "auto"),
+        )
     return ModeleClaude(cfg.modele_claude, cfg.cle_api, cfg.effort)

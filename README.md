@@ -164,13 +164,23 @@ Si Ollama n'est pas lance, le menu affiche « aucun modele detecte » et la
 pastille passe a « indisponible » avec la raison ; la lecture et la recherche
 continuent de fonctionner.
 
-**Ce qu'un modele local recoit.** Il n'a pas d'outils et ne peut donc rien
-demander : les pages lui sont fournies d'avance, **autant que le budget de
-contexte le permet**, les plus pertinentes d'abord (pages epinglees, puis
-celles nommees dans la question, puis les meilleurs resultats de la recherche,
-puis le reste). Le coffre de Recursion fait environ 134 000 caracteres : il
-passe donc en entier, ce que DESIGN 3 anticipait, et aucune page ne peut
-manquer.
+**Les outils.** Un modele qui declare la capacite `tools` (Ollama la donne :
+`ollama show <modele>`) les recoit, comme Claude : il lit les pages dont il a
+besoin, cherche dans le coffre, et propose ses ecritures par outil. C'est le
+cas de `glm-5.3-flash` sur Ollama Cloud. L'outil le detecte au demarrage et a
+chaque changement de modele ; le reglage `outils` le force au besoin :
+
+```toml
+[ollama]
+outils = "auto"   # « oui » : toujours ; « non » : jamais, coffre fourni d'avance
+```
+
+**Ce qu'un modele sans outils recoit.** Il ne peut rien demander : les pages
+lui sont fournies d'avance, **autant que le budget de contexte le permet**,
+les plus pertinentes d'abord (pages epinglees, puis celles nommees dans la
+question, puis les meilleurs resultats de la recherche, puis le reste). Un
+coffre qui depasse le budget n'est donc fourni qu'en partie : c'est la
+principale raison de preferer un modele a outils.
 
 ```toml
 contexte_max = 200000   # en caracteres, environ 4 par token
@@ -206,9 +216,58 @@ Les noms de dossiers ne sont jamais codes en dur : l'outil lit l'arborescence
 reelle. Les fichiers sont relus a chaque requete, donc une page ajoutee,
 renommee ou supprimee dans Obsidian apparait sans redemarrer.
 
-**L'outil ne modifie jamais le coffre.** Obsidian ecrit, l'outil lit. Les
-pages epinglees, le mode joueurs et l'historique de conversation sont ranges
-hors du coffre, dans le dossier de donnees de l'utilisateur.
+**L'outil n'ecrit dans le coffre que ce que le MJ valide**, et seulement dans
+les dossiers declares (voir la section suivante). Le reste, Obsidian l'ecrit.
+Les pages epinglees, le mode joueurs, l'historique de conversation et les
+propositions en attente sont ranges hors du coffre, dans le dossier de donnees
+de l'utilisateur.
+
+## Ecrire dans le coffre
+
+L'assistant peut **proposer** d'ecrire : creer la page d'une campagne a partir
+du modele du coffre, une fiche par personnage joueur, une note de seance, ou
+completer une page existante. Par exemple :
+
+> Je commence une campagne nommee « Les voleurs de dormeurs », en 400 AR a
+> Grand-Halte. Ana joue Lea, une Eveillee Tardive ; Ben joue K-7, une machine
+> liee a Lea. Cree la page de campagne et une fiche par personnage.
+
+Chaque proposition s'affiche sous la reponse, avec un apercu de la page et le
+chemin ou elle irait. **Rien n'est ecrit avant le clic sur « Enregistrer dans
+le coffre ».** « Retoucher » permet de corriger le texte avant, « Ignorer » de
+l'ecarter, « Tout enregistrer » de valider d'un coup les propositions d'une
+meme reponse. Une proposition laissee en attente survit au rechargement de la
+page et au redemarrage du serveur.
+
+Les garde-fous :
+
+| Regle | Pourquoi |
+| --- | --- |
+| seulement dans `dossiers_ecriture` (par defaut, le seul `dossier_notes`) | le canon reste ecrit dans Obsidian, a la main |
+| jamais dans un dossier ou une page commencant par `_` ou `.`, jamais dans une page `type: modele` | les modeles ne bougent pas |
+| une creation n'ecrase jamais une page | |
+| une modification remplace un passage exact, revérifie au moment d'ecrire | si la page a change dans Obsidian entre-temps, l'ecriture est refusee plutot que d'ecraser |
+| aucune ecriture en mode joueurs, et les propositions y sont masquees | elles peuvent contenir des secrets |
+
+```toml
+[coffres.recursion]
+dossiers_ecriture = ["07 Campagnes", "10 Notes de l assistant"]
+```
+
+Un modele a outils (Claude, ou un modele Ollama qui declare `tools`) propose
+avec deux outils, `proposer_page` et `proposer_modification`. Un modele sans
+outils ecrit ses propositions dans des blocs a la fin de sa reponse
+(```` ```page chemin="..." ```` ou ```` ```ajout page="..." ````) : le serveur
+les transforme en propositions, avec les memes verifications.
+
+Une page creee d'apres un modele n'est jamais un modele : si le texte propose
+recopie `type: modele`, la page prend le type indique par `modele_de`
+(`type: pj` pour le modele de personnage joueur), et `statut: modele` devient
+`statut: brouillon`.
+
+Sous chaque reponse, **Enregistrer comme note** range la reponse elle-meme dans
+le dossier de notes, avec ses citations changees en liens Obsidian ; le chemin
+et le texte restent modifiables avant d'enregistrer.
 
 ## La carte
 
@@ -296,6 +355,7 @@ assistant/
   coffre.py         index, arborescence, recherche, resolution des liens
   rendu.py          Markdown -> HTML (metadonnees, tableaux, encadres, [[liens]])
   carte.py          pages `type: carte` : lieux, placement, secrets
+  ecriture.py       propositions d'ecriture : regles, verifications, ecriture
   modele.py         Claude et Ollama derriere une meme interface
   assistant_mj.py   contexte envoye au modele, outils, conduite de la conversation
   serveur.py        routes HTTP et flux de conversation
@@ -313,8 +373,8 @@ peut etre versionne sans y embarquer le jeu, et inversement.
 | 0 | lire : pages, liens cliquables, arborescence | fait |
 | 1 | chercher : plein texte, filtres | fait |
 | 2 | l'assistant : conversation, contexte, citations, Claude et Ollama | fait |
-| 3 | la table : mode joueurs, pages epinglees | fait, sauf l'ecriture des notes de seance |
+| 3 | la table : mode joueurs, pages epinglees, ecriture validee par le MJ | fait |
 
-L'ecriture des notes de seance dans le coffre reste volontairement non
-implementee : c'est la question ouverte 4 du DESIGN, a trancher apres une
-partie de test. Le reglage `dossier_notes` est deja lu, pour le jour ou.
+La question ouverte 4 du DESIGN (« faut-il autoriser l'ecriture des notes de
+seance ? ») est tranchee ainsi : l'assistant propose, le MJ valide, et
+seulement dans les dossiers declares.

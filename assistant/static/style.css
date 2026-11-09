@@ -610,6 +610,67 @@ body.joueurs .app { box-shadow: inset 0 0 0 2px rgba(201, 131, 79, 0.55); }
   .barre { flex-wrap: wrap; }
 }
 
+/* -------------------------------------------------------------- ecriture */
+
+/* Une proposition d'ecriture : rien n'est ecrit avant le clic du MJ. */
+.proposition {
+  margin-top: var(--e2);
+  padding: var(--e2) var(--e3) var(--e3);
+  border: 1px solid var(--accent-sombre); border-left: 2px solid var(--accent);
+  border-radius: var(--r2);
+  background: rgba(94, 155, 209, 0.05);
+  display: flex; flex-direction: column; gap: var(--e2);
+  font-size: 13px;
+}
+.proposition.refusee { border-color: rgba(212, 103, 95, 0.45); border-left-color: var(--casse); background: rgba(212, 103, 95, 0.05); }
+.proposition.refusee p { color: #e8a9a4; font-size: 12.5px; }
+.proposition.faite { border-left-color: var(--joueurs); background: rgba(95, 169, 138, 0.05); }
+.proposition.ignoree { border-left-color: var(--texte-faible); background: none; opacity: 0.7; }
+.proposition.en-cours { opacity: 0.6; pointer-events: none; }
+.prop-tete { display: flex; align-items: baseline; gap: var(--e2); flex-wrap: wrap; min-width: 0; }
+.prop-chemin {
+  font-family: var(--mono); font-size: 11px; color: var(--texte-doux);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1;
+}
+.prop-resume { color: var(--texte); }
+.prop-meta { font-family: var(--mono); font-size: 10px; color: var(--texte-faible); margin-bottom: 4px; }
+.prop-apercu { max-height: 280px; overflow-y: auto; padding: var(--e2); background: var(--fond); border: 1px solid var(--filet); border-radius: var(--r2); }
+.prop-rendu { font-size: 12.5px; }
+.prop-rendu h2, .prop-rendu h3 { font-size: 14px; margin: var(--e2) 0 4px; color: var(--accent-doux); }
+.prop-rendu p, .prop-rendu ul, .prop-rendu table { margin: 0 0 var(--e2); }
+.prop-rendu table { border-collapse: collapse; font-size: 11.5px; }
+.prop-rendu th, .prop-rendu td { border-bottom: 1px solid var(--filet); padding: 2px 6px; text-align: left; }
+.prop-ancien, .prop-nouveau {
+  margin: 0 0 4px; padding: 4px var(--e2); white-space: pre-wrap; word-break: break-word;
+  font-family: var(--mono); font-size: 11px; border-radius: var(--r1);
+}
+.prop-ancien { color: #e8a9a4; background: rgba(212, 103, 95, 0.08); text-decoration: line-through; text-decoration-color: rgba(212, 103, 95, 0.5); }
+.prop-nouveau { color: #a9d6c3; background: rgba(95, 169, 138, 0.08); }
+.prop-texte {
+  width: 100%; min-height: 120px; resize: vertical;
+  padding: var(--e2); background: var(--fond); border: 1px solid var(--filet-fort); border-radius: var(--r2);
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+}
+.prop-texte:focus { border-color: var(--accent); }
+.prop-champ { display: flex; flex-direction: column; gap: 2px; }
+.prop-champ input {
+  padding: 5px var(--e2); background: var(--fond); border: 1px solid var(--filet-fort); border-radius: var(--r2);
+  font-family: var(--mono); font-size: 11.5px;
+}
+.prop-actions { display: flex; flex-wrap: wrap; gap: var(--e2); }
+.prop-etat { font-size: 12.5px; color: var(--texte-doux); }
+.prop-etat[data-ton="ok"] { color: #a9d6c3; }
+.prop-etat[data-ton="alerte"] { color: #e8a9a4; }
+.prop-tout { align-self: flex-start; margin-top: var(--e2); }
+.trace-item[data-genre="ecriture"] { color: #a9d6c3; border-color: rgba(95, 169, 138, 0.45); }
+
+.tour-actions { display: flex; justify-content: flex-end; }
+.lien-action { font-size: 11px; color: var(--texte-faible); }
+.lien-action:hover { color: var(--accent-doux); text-decoration: underline; text-underline-offset: 3px; }
+
+/* En mode joueurs, l'ecran est tourne vers la table : ni propositions, ni notes. */
+body.joueurs .proposition, body.joueurs .tour-actions, body.joueurs .prop-tout { display: none; }
+
 /* ------------------------------------------------------------------ carte */
 
 /* Une page `type: carte` occupe toute la colonne centrale. */

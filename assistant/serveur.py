@@ -20,6 +20,7 @@ from . import carte as cartes
 from . import modele as modeles
 from .assistant_mj import AssistantMJ, url_de_page
 from .coffre import CoffreIntrouvable, HorsCoffre, Index
+from .ecriture import Ecriture, EcritureRefusee
 from .config import NOMS_CLE_OLLAMA, Config
 from .etat import Etats
 from . import rendu
@@ -58,6 +59,42 @@ class Application:
     def etat(self):
         coffre = self.coffre_courant
         return self.etats.pour(coffre.cle if coffre else "aucun")
+
+    def ecriture(self) -> Ecriture | None:
+        """Ce que l'assistant peut ecrire dans le coffre courant, apres validation."""
+        coffre = self.coffre_courant
+        if coffre is None:
+            return None
+        return Ecriture(self.index(), coffre.zones_ecriture)
+
+    def ecrire(self, corps: dict) -> dict:
+        """Ecrit une proposition validee par le MJ, ou une note qu'il a composee."""
+        coffre = self.coffre_courant
+        if coffre is None:
+            raise EcritureRefusee("Aucun coffre ouvert.")
+        if self.etat().mode_joueurs:
+            raise EcritureRefusee("Pas d'ecriture en mode joueurs.")
+        ecriture = self.ecriture()
+        contenu = corps.get("contenu")
+        contenu = None if contenu is None else str(contenu)
+        ident = str(corps.get("id") or "")
+        if ident:
+            proposition = self.etats.proposition(coffre.cle, ident)
+            if proposition is None:
+                raise EcritureRefusee("Cette proposition n'existe plus.")
+            chemin = ecriture.appliquer(proposition, contenu)
+            self.etats.retirer_proposition(coffre.cle, ident)
+        else:
+            # Une note composee par le MJ (« Enregistrer comme note »).
+            proposition = ecriture.preparer_creation(str(corps.get("chemin") or ""), contenu or "")
+            chemin = ecriture.appliquer(proposition)
+        page = self.index().page(chemin)
+        return {
+            "ok": True,
+            "chemin": chemin,
+            "titre": page.titre if page else chemin,
+            "url": url_de_page(chemin),
+        }
 
     # ----------------------------------------------------------------- modele
 
@@ -227,6 +264,13 @@ class Application:
                     for c in cartes.cartes(index, etat.mode_joueurs)
                 ],
                 "conversation": etat.conversation,
+                # Les propositions peuvent contenir des secrets : jamais en mode joueurs.
+                "ecriture": {
+                    "active": not etat.mode_joueurs,
+                    "dossiers": coffre.zones_ecriture,
+                    "notes": coffre.dossier_notes,
+                },
+                "propositions": [] if etat.mode_joueurs else etat.propositions,
             }
         )
         return base
@@ -247,7 +291,12 @@ class Application:
             return
 
         assistant = AssistantMJ(
-            index, self.modele(), etat.mode_joueurs, self.cfg.contexte_max
+            index,
+            self.modele(),
+            etat.mode_joueurs,
+            self.cfg.contexte_max,
+            ecriture=Ecriture(index, coffre.zones_ecriture),
+            proposer=lambda proposition: self.etats.ajouter_proposition(coffre.cle, proposition),
         )
         historique = list(etat.conversation)
         self.etats.ajouter_message(coffre.cle, "user", question)
@@ -478,6 +527,19 @@ class Gestionnaire(BaseHTTPRequestHandler):
                 self.app.oublier_modele()
                 cfg.ecrire()
                 return self._json(self.app.etat_complet())
+
+            if chemin == "/api/ecrire":
+                try:
+                    resultat = self.app.ecrire(corps)
+                except EcritureRefusee as err:
+                    return self._json({"erreur": str(err)}, 400)
+                return self._json(resultat)
+
+            if chemin == "/api/proposition/ignorer":
+                coffre = self.app.coffre_courant
+                if coffre is not None:
+                    self.app.etats.retirer_proposition(coffre.cle, str(corps.get("id") or ""))
+                return self._json({"ok": True})
 
             if chemin == "/api/conversation/vider":
                 coffre = self.app.coffre_courant

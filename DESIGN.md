@@ -183,7 +183,7 @@ Chaque version doit être utilisable seule. Si l'envie ou le temps manque après
 - [ ] Attendre la première partie avant de commencer : quelles informations ai-je réellement cherchées, et à quelle vitesse en avais-je besoin ?
 - [ ] Un assistant pendant la partie aide-t-il, ou casse-t-il le rythme ? À tester d'abord avec Claude dans une fenêtre à côté.
 - [ ] Le mode joueurs sert-il vraiment, ou l'écran reste-t-il toujours face au MJ ?
-- [ ] Faut-il autoriser l'écriture des notes de séance, ou Obsidian suffit-il ?
+- [x] Faut-il autoriser l'écriture des notes de séance, ou Obsidian suffit-il ? *Tranché : l'assistant propose, le MJ valide d'un clic, et seulement dans les dossiers déclarés (`dossiers_ecriture`). Voir le README, « Ecrire dans le coffre ».*
 - [ ] Quel modèle local vaut la peine d'être essayé, et pour quelles tâches ?
 - [ ] Ai-je vraiment besoin de plusieurs coffres, ou un seul suffit-il ?
 

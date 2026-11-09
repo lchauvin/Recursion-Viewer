@@ -78,6 +78,8 @@
     vuesCarte: {},
     vueTableau: false,
     surCarte: null,
+    // L'ecriture dans le coffre : propositions de l'assistant, notes du MJ.
+    ecriture: { active: false, dossiers: [], notes: "" },
   };
 
   // ------------------------------------------------------------------ outils
@@ -130,6 +132,7 @@
     etat.modeJoueurs = !!donnees.mode_joueurs;
     etat.epingles = donnees.epingles || [];
     etat.cartes = donnees.cartes || [];
+    etat.ecriture = donnees.ecriture || { active: false, dossiers: [], notes: "" };
     el.boutonCarte.hidden = etat.cartes.length === 0;
 
     el.coffreNom.textContent = donnees.coffre.chemin;
@@ -180,9 +183,17 @@
     rendreEpingles();
     if (donnees.conversation && !el.conversation.dataset.charge) {
       el.conversation.dataset.charge = "1";
-      donnees.conversation.forEach((tour) =>
-        ajouterTour(tour.role, tour.contenu, { markdown: tour.role === "assistant" })
-      );
+      donnees.conversation.forEach((tour) => {
+        const bloc = ajouterTour(tour.role, tour.contenu, { markdown: tour.role === "assistant" });
+        if (tour.role === "assistant") ajouterActionsTour(bloc, tour.contenu);
+      });
+      // Les propositions laissees en attente (page rechargee, serveur relance).
+      const attente = donnees.propositions || [];
+      if (attente.length) {
+        const bloc = ajouterTour("assistant", "Propositions en attente de validation :", {});
+        attente.forEach((prop) => bloc.appendChild(carteProposition(prop)));
+        majToutEnregistrer(bloc);
+      }
       defiler();
     }
     return donnees;
@@ -683,6 +694,17 @@
 
   // ------------------------------------------------- rendu Markdown (reponses)
 
+  /* Un modele sans outils ecrit ses propositions en blocs ```page / ```ajout :
+     dans la reponse, on les remplace par un renvoi vers la carte de
+     proposition, affichee sous le texte. */
+  const BLOC_PROPOSITION = /^(`{3,})(page|ajout)[ \t]+([^\n]*)\n[\s\S]*?\n\1[ \t]*$/gm;
+  function sansBlocsProposition(texte) {
+    return String(texte || "").replace(BLOC_PROPOSITION, (_, __, genre, attrs) => {
+      const cible = (attrs.match(/(?:chemin|page)\s*=\s*"([^"]*)"/) || [])[1] || "";
+      return `*↳ proposition : ${genre === "page" ? "nouvelle page" : "ajout a"} « ${cible} », ci-dessous.*`;
+    });
+  }
+
   function markdown(texte) {
     const lignes = String(texte || "").replace(/\r\n/g, "\n").split("\n");
     const sortie = [];
@@ -861,7 +883,7 @@
     bloc.innerHTML =
       `<span class="tour-role">${nom}</span><div class="tour-corps"></div>`;
     const corps = bloc.querySelector(".tour-corps");
-    if (options.markdown) corps.innerHTML = markdown(contenu);
+    if (options.markdown) corps.innerHTML = markdown(role === "assistant" ? sansBlocsProposition(contenu) : contenu);
     else corps.textContent = contenu;
     el.conversation.appendChild(bloc);
     return bloc;
@@ -917,16 +939,29 @@
           }
           if (ev.type === "texte") {
             texte += ev.texte;
-            corps.innerHTML = markdown(texte);
+            corps.innerHTML = markdown(sansBlocsProposition(texte));
             defiler();
           } else if (ev.type === "outil") {
             const item = document.createElement("span");
             item.className = "trace-item";
-            item.dataset.genre = ev.nom === "lire_page" ? "lecture" : "recherche";
-            const cible = ev.entree?.page || ev.entree?.requete || "";
+            const propose = ev.nom.startsWith("proposer_");
+            item.dataset.genre = ev.nom === "lire_page" ? "lecture" : propose ? "ecriture" : "recherche";
+            const cible = ev.entree?.chemin || ev.entree?.page || ev.entree?.requete || "";
             item.textContent =
-              (ev.nom === "lire_page" ? "lit " : "cherche ") + cible;
+              (ev.nom === "lire_page" ? "lit " : propose ? "propose " : "cherche ") + cible;
             trace.appendChild(item);
+            defiler();
+          } else if (ev.type === "proposition") {
+            bloc.appendChild(carteProposition(ev.proposition));
+            majToutEnregistrer(bloc);
+            defiler();
+          } else if (ev.type === "proposition_refusee") {
+            const refus = document.createElement("div");
+            refus.className = "proposition refusee";
+            refus.innerHTML =
+              `<span class="etiquette">proposition refusee</span>` +
+              `<code>${echapper(ev.chemin || "?")}</code><p>${echapper(ev.raison)}</p>`;
+            bloc.appendChild(refus);
             defiler();
           } else if (ev.type === "sources") {
             const bande = document.createElement("div");
@@ -954,7 +989,8 @@
       ajouterTour("erreur", "Le flux a ete interrompu : " + err.message);
     } finally {
       corps.classList.remove("curseur");
-      if (!texte.trim() && !corps.textContent.trim()) bloc.remove();
+      if (!texte.trim() && !corps.textContent.trim() && !bloc.querySelector(".proposition")) bloc.remove();
+      else if (texte.trim()) ajouterActionsTour(bloc, texte);
       etat.enCours = false;
       el.boutonEnvoyer.disabled = false;
       el.question.focus();
@@ -962,9 +998,248 @@
     }
   }
 
+  // -------------------------------------------------------------- ecriture
+
+  const GENRES = { creation: "nouvelle page", modification: "modification" };
+
+  function separerEntete(contenu) {
+    const m = String(contenu || "").match(/^---\n([\s\S]*?)\n---\n?/);
+    if (!m) return { meta: "", corps: contenu || "" };
+    const meta = m[1]
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .join(" · ");
+    return { meta, corps: contenu.slice(m[0].length) };
+  }
+
+  /* La carte d'une proposition : ce qui serait ecrit, et ou. Rien n'est ecrit
+     avant le clic sur « Enregistrer dans le coffre ». */
+  function carteProposition(prop) {
+    const carte = document.createElement("div");
+    carte.className = "proposition";
+    carte.dataset.id = prop.id;
+    let apercu = "";
+    let brut = "";
+    if (prop.genre === "creation") {
+      const { meta, corps } = separerEntete(prop.contenu);
+      apercu =
+        (meta ? `<p class="prop-meta">${echapper(meta)}</p>` : "") +
+        `<div class="prop-rendu">${markdown(corps)}</div>`;
+      brut = prop.contenu;
+    } else {
+      const ou = prop.ancien
+        ? ""
+        : `<p class="prop-meta">ajout ${prop.section ? "a la fin de la section « " + echapper(prop.section) + " »" : "a la fin de la page"}</p>`;
+      apercu =
+        ou +
+        (prop.ancien ? `<pre class="prop-ancien">${echapper(prop.ancien)}</pre>` : "") +
+        `<pre class="prop-nouveau">${echapper(prop.nouveau)}</pre>`;
+      brut = prop.nouveau;
+    }
+    carte.innerHTML =
+      `<header class="prop-tete">
+         <span class="etiquette">proposition · ${GENRES[prop.genre] || prop.genre}</span>
+         <code class="prop-chemin" title="${echapper(prop.chemin)}">${echapper(prop.chemin)}</code>
+       </header>
+       ${prop.resume ? `<p class="prop-resume">${echapper(prop.resume)}</p>` : ""}
+       <div class="prop-apercu">${apercu}</div>
+       <textarea class="prop-texte" spellcheck="false" hidden></textarea>
+       <footer class="prop-actions">
+         <button type="button" class="bouton bouton-primaire bouton-petit" data-prop="enregistrer">Enregistrer dans le coffre</button>
+         <button type="button" class="bouton bouton-petit" data-prop="retoucher">Retoucher</button>
+         <button type="button" class="bouton bouton-petit" data-prop="ignorer">Ignorer</button>
+       </footer>
+       <p class="prop-etat" hidden></p>`;
+    carte.querySelector(".prop-texte").value = brut;
+    return carte;
+  }
+
+  function majToutEnregistrer(bloc) {
+    const enAttente = bloc.querySelectorAll(".proposition[data-id]:not(.faite)").length;
+    let bouton = bloc.querySelector(".prop-tout");
+    if (enAttente >= 2 && !bouton) {
+      bouton = document.createElement("button");
+      bouton.type = "button";
+      bouton.className = "bouton bouton-petit prop-tout";
+      bouton.dataset.prop = "tout";
+      bloc.appendChild(bouton);
+    }
+    if (bouton) {
+      bouton.hidden = enAttente < 2;
+      bouton.textContent = `Tout enregistrer (${enAttente})`;
+      bloc.appendChild(bouton);
+    }
+  }
+
+  function etatCarte(carte, texte, ton) {
+    const p = carte.querySelector(".prop-etat");
+    p.hidden = false;
+    p.dataset.ton = ton || "";
+    p.innerHTML = texte;
+  }
+
+  async function enregistrerCarte(carte) {
+    if (carte.classList.contains("faite") || carte.classList.contains("en-cours")) return false;
+    carte.classList.add("en-cours");
+    const zone = carte.querySelector(".prop-texte");
+    const charge = { id: carte.dataset.id };
+    // Le texte retouche par le MJ remplace la proposition.
+    if (!zone.hidden) charge.contenu = zone.value;
+    const reponse = await poster("/api/ecrire", charge);
+    carte.classList.remove("en-cours");
+    if (reponse.erreur) {
+      etatCarte(carte, echapper(reponse.erreur), "alerte");
+      return false;
+    }
+    carte.classList.add("faite");
+    carte.querySelector(".prop-actions").remove();
+    zone.hidden = true;
+    etatCarte(
+      carte,
+      `Enregistree dans le coffre : <a href="${echapper(reponse.url)}" data-page="${echapper(
+        reponse.chemin
+      )}">${echapper(reponse.titre)}</a>`,
+      "ok"
+    );
+    await chargerArbre();
+    if (etat.cheminCourant === reponse.chemin) ouvrirPage(reponse.chemin, false);
+    return true;
+  }
+
+  async function actionProposition(bouton) {
+    const action = bouton.dataset.prop;
+    if (action === "tout") {
+      const bloc = bouton.closest(".tour");
+      bouton.disabled = true;
+      for (const carte of bloc.querySelectorAll(".proposition[data-id]:not(.faite)")) {
+        await enregistrerCarte(carte);
+      }
+      bouton.disabled = false;
+      majToutEnregistrer(bloc);
+      return;
+    }
+    const carte = bouton.closest(".proposition");
+    if (!carte) return;
+    if (action === "enregistrer") {
+      await enregistrerCarte(carte);
+      majToutEnregistrer(carte.closest(".tour"));
+    } else if (action === "retoucher") {
+      const zone = carte.querySelector(".prop-texte");
+      zone.hidden = !zone.hidden;
+      carte.querySelector(".prop-apercu").hidden = !zone.hidden;
+      bouton.textContent = zone.hidden ? "Retoucher" : "Apercu";
+      if (!zone.hidden) {
+        zone.style.height = Math.min(zone.scrollHeight + 4, window.innerHeight * 0.5) + "px";
+        zone.focus();
+      }
+    } else if (action === "ignorer") {
+      await poster("/api/proposition/ignorer", { id: carte.dataset.id });
+      carte.classList.add("faite", "ignoree");
+      carte.querySelector(".prop-actions").remove();
+      carte.querySelector(".prop-texte").hidden = true;
+      etatCarte(carte, "Ignoree : rien n'a ete ecrit.");
+      majToutEnregistrer(carte.closest(".tour"));
+    }
+  }
+
+  // « Enregistrer comme note » : la reponse, telle quelle, dans le dossier de notes.
+  function ajouterActionsTour(bloc, texte) {
+    if (bloc.querySelector(".tour-actions")) return;
+    const barre = document.createElement("div");
+    barre.className = "tour-actions";
+    barre.innerHTML =
+      '<button type="button" class="lien-action" data-note>Enregistrer comme note</button>';
+    bloc.texteBrut = texte;
+    bloc.appendChild(barre);
+  }
+
+  function nomDeFichier(texte) {
+    return String(texte || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/['’]/g, " ")
+      .replace(/[^A-Za-z0-9 -]+/g, " ")
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 7)
+      .join(" ");
+  }
+
+  function versObsidian(texte) {
+    // Les liens de l'outil deviennent des liens Obsidian, cliquables dans le coffre.
+    return sansBlocsProposition(texte).replace(/\[([^\]]+)\]\(\/page\/([^)\s]+)\)/g, (_, libelle, chemin) => {
+      let nom = chemin;
+      try { nom = decodeURIComponent(chemin); } catch {}
+      nom = nom.split("/").pop();
+      return nom === libelle ? `[[${nom}]]` : `[[${nom}|${libelle}]]`;
+    });
+  }
+
+  function ouvrirNote(bouton) {
+    const bloc = bouton.closest(".tour");
+    if (bloc.querySelector(".note-form")) return;
+    let question = bloc.previousElementSibling;
+    while (question && question.dataset.role !== "user") question = question.previousElementSibling;
+    const sujet = nomDeFichier(question ? question.querySelector(".tour-corps").textContent : "") || "Note";
+    const date = new Date().toISOString().slice(0, 10);
+    const titre = question ? question.querySelector(".tour-corps").textContent.trim().slice(0, 90) : sujet;
+    const contenu =
+      `---\ntype: note\nstatut: brouillon\nvisibilite: mj\n---\n\n# ${titre}\n\n` +
+      versObsidian(bloc.texteBrut || "").trim() + "\n";
+    const form = document.createElement("form");
+    form.className = "proposition note-form";
+    form.innerHTML =
+      `<header class="prop-tete"><span class="etiquette">enregistrer comme note</span></header>
+       <label class="prop-champ"><span class="etiquette">chemin</span>
+         <input type="text" class="note-chemin" spellcheck="false"></label>
+       <textarea class="prop-texte" spellcheck="false"></textarea>
+       <footer class="prop-actions">
+         <button type="submit" class="bouton bouton-primaire bouton-petit">Enregistrer dans le coffre</button>
+         <button type="button" class="bouton bouton-petit" data-annuler>Annuler</button>
+       </footer>
+       <p class="prop-etat" hidden></p>`;
+    form.querySelector(".note-chemin").value = `${etat.ecriture.notes}/${date} ${sujet}`;
+    const zone = form.querySelector(".prop-texte");
+    zone.value = contenu;
+    bloc.appendChild(form);
+    zone.style.height = Math.min(zone.scrollHeight + 4, window.innerHeight * 0.4) + "px";
+    form.querySelector("[data-annuler]").addEventListener("click", () => form.remove());
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const reponse = await poster("/api/ecrire", {
+        chemin: form.querySelector(".note-chemin").value,
+        contenu: zone.value,
+      });
+      if (reponse.erreur) return etatCarte(form, echapper(reponse.erreur), "alerte");
+      form.classList.add("faite");
+      form.querySelector(".prop-actions").remove();
+      zone.hidden = true;
+      etatCarte(
+        form,
+        `Note enregistree : <a href="${echapper(reponse.url)}" data-page="${echapper(reponse.chemin)}">${echapper(
+          reponse.titre
+        )}</a>`,
+        "ok"
+      );
+      chargerArbre();
+    });
+    defiler();
+  }
+
   // ------------------------------------------------------------- evenements
 
   document.addEventListener("click", async (ev) => {
+    const prop = ev.target.closest("[data-prop]");
+    if (prop) {
+      ev.preventDefault();
+      return actionProposition(prop);
+    }
+    const note = ev.target.closest("[data-note]");
+    if (note) {
+      ev.preventDefault();
+      return ouvrirNote(note);
+    }
     const retirer = ev.target.closest("[data-retirer]");
     if (retirer) {
       ev.preventDefault();

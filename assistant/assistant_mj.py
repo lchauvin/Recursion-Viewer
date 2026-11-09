@@ -16,10 +16,11 @@ ou les alias apparaissent dans la question, plus les pages epinglees.
 from __future__ import annotations
 
 import urllib.parse
-from typing import Iterator
+from typing import Callable, Iterator
 
 from . import rendu
 from .coffre import Index, Page, plier
+from .ecriture import Ecriture, EcritureRefusee, blocs_de
 from .modele import Modele
 
 LIMITE_PAGES_AUTO = 6
@@ -80,6 +81,130 @@ visibilite est `joueurs`, et les encadres reserves au MJ ont ete retires du
 contexte. N'evoque aucun secret, meme par allusion, et ne reclame pas une page
 reservee au MJ : dis simplement qu'elle n'est pas disponible dans ce mode.
 """
+
+CONSIGNE_ECRITURE_COMMUNE = """\
+# Ecrire dans le coffre
+
+Tu peux PROPOSER d'ecrire dans le coffre : creer une page (une fiche de
+personnage joueur, la page d'une campagne, une note de seance) ou completer une
+page existante. Rien n'est ecrit tant que le MJ n'a pas valide ta proposition
+d'un clic, sous ta reponse.
+
+- Dossiers ou tu peux ecrire : {dossiers}. Jamais ailleurs, et jamais dans un
+  dossier ou une page dont le nom commence par `_` : ce sont les modeles.
+- Pour creer a partir d'un modele (une campagne, un personnage, une seance),
+  pars du modele du coffre : reprends sa structure et ses metadonnees, mets a
+  jour les metadonnees, remplis ce que le MJ t'a donne et laisse vides les
+  champs que tu ne connais pas. N'invente pas de caracteristiques.
+- Les metadonnees d'une page creee : `statut: brouillon` (une page que tu
+  ecris n'est jamais `canon`, c'est au MJ d'en decider) ; si le modele porte
+  `modele_de: X`, la page prend `type: X`, sinon le `type` du modele ; garde
+  la `visibilite` du modele.
+- Suis les conventions du coffre pour les noms de dossiers et de fichiers.
+- Dans les pages que tu ecris, utilise les liens Obsidian
+  `[[Nom du fichier|Titre affiche]]`, pas les liens de l'outil.
+- Ne propose d'ecrire que si le MJ le demande ou l'accepte. Dans ta reponse,
+  dis en une ou deux phrases ce que tu proposes ; ne recopie pas le contenu,
+  le MJ le voit dans la proposition.
+"""
+
+CONSIGNE_ECRITURE_OUTILS = """\
+- Outils : `proposer_page` pour une nouvelle page, `proposer_modification` pour
+  une page existante. Lis d'abord le modele, ou la page a modifier, avec
+  `lire_page`. Une proposition par page.
+"""
+
+CONSIGNE_ECRITURE_BLOCS = """\
+- Tu n'as pas d'outil : ecris chaque proposition dans un bloc, a la fin de ta
+  reponse. Pour une nouvelle page :
+
+  ```page chemin="Dossier/Sous-dossier/Nom de la page"
+  ---
+  type: ...
+  ---
+
+  # Titre
+  ...
+  ```
+
+  Pour ajouter du texte a la fin d'une section d'une page existante (ou a la
+  fin de la page si tu omets `section`) :
+
+  ```ajout page="Dossier/Page existante" section="Titre de la section"
+  - le texte ajoute
+  ```
+
+  Le chemin part de la racine du coffre, sans `.md`. Un bloc par page.
+"""
+
+OUTILS_ECRITURE = [
+    {
+        "name": "proposer_page",
+        "description": (
+            "Propose de creer une nouvelle page dans le coffre. Rien n'est ecrit tant "
+            "que le MJ n'a pas valide la proposition. La page ne doit pas deja exister."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chemin": {
+                    "type": "string",
+                    "description": (
+                        "Chemin de la nouvelle page depuis la racine du coffre, sans "
+                        "l'extension .md, dans un dossier ou l'ecriture est permise."
+                    ),
+                },
+                "contenu": {
+                    "type": "string",
+                    "description": "La page complete en Markdown, metadonnees comprises.",
+                },
+                "resume": {
+                    "type": "string",
+                    "description": "Une phrase qui dit au MJ ce que contient la page.",
+                },
+            },
+            "required": ["chemin", "contenu", "resume"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "name": "proposer_modification",
+        "description": (
+            "Propose de modifier une page existante : remplacer un passage exact, ou, "
+            "si `ancien` est vide, ajouter du texte a la fin d'une section (ou de la "
+            "page). Lis la page avant. Rien n'est ecrit sans la validation du MJ."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "page": {"type": "string", "description": "Chemin, nom ou titre de la page."},
+                "ancien": {
+                    "type": "string",
+                    "description": (
+                        "Le passage a remplacer, recopie exactement depuis la page et "
+                        "unique dans la page. Vide pour ajouter sans rien remplacer."
+                    ),
+                },
+                "nouveau": {"type": "string", "description": "Le texte a ecrire."},
+                "section": {
+                    "type": "string",
+                    "description": (
+                        "Quand `ancien` est vide : le titre de la section a la fin de "
+                        "laquelle ajouter. Vide pour la fin de la page."
+                    ),
+                },
+                "resume": {
+                    "type": "string",
+                    "description": "Une phrase qui dit au MJ ce que change la modification.",
+                },
+            },
+            "required": ["page", "ancien", "nouveau", "section", "resume"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+]
 
 OUTILS = [
     {
@@ -164,6 +289,8 @@ class AssistantMJ:
         modele: Modele,
         mode_joueurs: bool = False,
         contexte_max: int = CONTEXTE_MAX,
+        ecriture: Ecriture | None = None,
+        proposer: Callable[[dict], dict] | None = None,
     ):
         self.index = index
         self.modele = modele
@@ -171,6 +298,15 @@ class AssistantMJ:
         self.contexte_max = max(2000, int(contexte_max))
         self.pages_lues: list[str] = []
         self.coffre_entier = False
+        # L'ecriture : jamais en mode joueurs, puisque l'ecran est tourne vers
+        # la table et qu'une proposition peut contenir des secrets.
+        self.ecriture = ecriture if not mode_joueurs else None
+        self.proposer = proposer
+        self._en_attente: list[dict] = []
+
+    @property
+    def ecriture_active(self) -> bool:
+        return self.ecriture is not None
 
     # ---------------------------------------------------------------- contexte
 
@@ -220,6 +356,12 @@ class AssistantMJ:
         morceaux.append(CONSIGNE_CITATION.strip() + "\n" + supplement.strip())
         if self.mode_joueurs:
             morceaux.append(CONSIGNE_MODE_JOUEURS.strip())
+        if self.ecriture_active:
+            morceaux.append(
+                CONSIGNE_ECRITURE_COMMUNE.format(dossiers=self.ecriture.decrire_dossiers()).strip()
+                + "\n"
+                + (CONSIGNE_ECRITURE_OUTILS if self.modele.outils_natifs else CONSIGNE_ECRITURE_BLOCS).strip()
+            )
 
         entete_index = (
             "Chaque ligne est une page consultable avec `lire_page`."
@@ -289,7 +431,63 @@ class AssistantMJ:
                     lignes.append("    l.%d : %s" % (extrait["ligne"], extrait["texte"]))
             return "\n".join(lignes)
 
+        if nom in ("proposer_page", "proposer_modification"):
+            if not self.ecriture_active:
+                return "L'ecriture dans le coffre n'est pas disponible ici."
+            try:
+                if nom == "proposer_page":
+                    proposition = self.ecriture.preparer_creation(
+                        str(entree.get("chemin") or ""),
+                        str(entree.get("contenu") or ""),
+                        str(entree.get("resume") or ""),
+                    )
+                else:
+                    proposition = self.ecriture.preparer_modification(
+                        str(entree.get("page") or ""),
+                        str(entree.get("ancien") or ""),
+                        str(entree.get("nouveau") or ""),
+                        str(entree.get("resume") or ""),
+                        str(entree.get("section") or ""),
+                    )
+            except EcritureRefusee as err:
+                return "Proposition refusee : %s" % err
+            rangee = self._garder(proposition)
+            return (
+                "Proposition prete (%s de « %s »). Elle attend la validation du MJ, "
+                "qui la voit sous ta reponse : ne recopie pas son contenu."
+                % ("creation" if rangee["genre"] == "creation" else "modification", rangee["chemin"])
+            )
+
         return "Outil inconnu : %s" % nom
+
+    # --------------------------------------------------------------- ecriture
+
+    def _garder(self, proposition: dict) -> dict:
+        rangee = self.proposer(proposition) if self.proposer else dict(proposition)
+        self._en_attente.append(rangee)
+        return rangee
+
+    def _vider_propositions(self) -> Iterator[dict]:
+        while self._en_attente:
+            yield {"type": "proposition", "proposition": self._en_attente.pop(0)}
+
+    def propositions_en_blocs(self, texte: str) -> Iterator[dict]:
+        """Les blocs ```page / ```ajout d'une reponse, changes en propositions."""
+        for bloc in blocs_de(texte):
+            attrs = bloc["attrs"]
+            cible = attrs.get("chemin") or attrs.get("page") or ""
+            try:
+                if bloc["genre"] == "page":
+                    proposition = self.ecriture.preparer_creation(cible, bloc["corps"], attrs.get("resume", ""))
+                else:
+                    proposition = self.ecriture.preparer_modification(
+                        cible, "", bloc["corps"], attrs.get("resume", ""), attrs.get("section", "")
+                    )
+            except EcritureRefusee as err:
+                yield {"type": "proposition_refusee", "chemin": cible, "raison": str(err)}
+                continue
+            self._garder(proposition)
+            yield from self._vider_propositions()
 
     def _suggerer(self, demande: str, maximum: int = 5) -> list[str]:
         cible = plier(demande)
@@ -408,7 +606,7 @@ class AssistantMJ:
 
         if self.modele.outils_natifs:
             messages.append({"role": "user", "content": question})
-            outils = OUTILS
+            outils = OUTILS + (OUTILS_ECRITURE if self.ecriture_active else [])
         else:
             # Variante sans outils : le modele ne peut rien demander, on lui
             # fournit donc les pages d'avance, autant que le budget permet.
@@ -432,8 +630,17 @@ class AssistantMJ:
             messages.append({"role": "user", "content": contexte + "Question du MJ : " + question})
             outils = None
 
+        texte: list[str] = []
         for evenement in self.modele.repondre(systeme, messages, outils, self.executer):
+            if evenement.get("type") == "texte":
+                texte.append(evenement.get("texte") or "")
             yield evenement
+            # Une proposition faite par outil part juste apres l'appel.
+            yield from self._vider_propositions()
+
+        # Un modele sans outils propose en blocs, dans le texte de sa reponse.
+        if self.ecriture_active:
+            yield from self.propositions_en_blocs("".join(texte))
 
         # Les pages reellement consultees, pour les afficher sous la reponse.
         vues = list(dict.fromkeys(self.pages_lues))

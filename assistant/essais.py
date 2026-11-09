@@ -508,6 +508,238 @@ def _sans_cle(etat) -> bool:
     return "sk-ant" not in texte
 
 
+ECRITURE_ESSAI = {
+    "Campagnes/_Modele/Campagne.md": (
+        "---\ntype: campagne\nstatut: brouillon\n---\n\n# Campagne : (nom)\n\n"
+        "## Les personnages joueurs\n\n- \n\n## Les seances\n\n| N | Resume |\n| --- | --- |\n"
+    ),
+    "Campagnes/Existante/Campagne.md": (
+        "---\ntype: campagne\n---\r\n\r\n# Campagne existante\r\n\r\n"
+        "**Groupe :** (joueurs)\r\n\r\n## Les personnages joueurs\r\n\r\n- [[Lea]]\r\n\r\n## Fin\r\n\r\nrien\r\n"
+    ),
+    "Modeles/Personnage.md": "---\ntype: modele\n---\n\n# Personnage\n\n**Joueur :** \n",
+    "Notes/Vide.md": "# Vide\n",
+    "Canon/Regle.md": "# Regle\n\nIntouchable.\n",
+}
+
+
+class ModeleBavard(ModeleMuet):
+    """Un modele sans outils qui propose une page en bloc dans sa reponse."""
+
+    def __init__(self, reponse: str):
+        super().__init__(outils=False)
+        self.reponse = reponse
+
+    def repondre(self, systeme, messages, outils=None, executer=None):
+        self.systeme = systeme
+        yield {"type": "texte", "texte": self.reponse}
+        yield {"type": "fin", "usage": {}}
+
+
+def essais_ecriture(r: Rapport) -> None:
+    """L'ecriture dans le coffre : seulement des propositions, validees, et bornees."""
+    print("\n== ecriture dans le coffre ==")
+    from .ecriture import Ecriture, EcritureRefusee, blocs_de
+
+    dossier = Path(tempfile.mkdtemp(prefix="essai-ecriture-"))
+    try:
+        for nom, contenu in ECRITURE_ESSAI.items():
+            cible = dossier / nom
+            cible.parent.mkdir(parents=True, exist_ok=True)
+            cible.write_bytes(contenu.encode("utf-8"))
+        idx = Index(dossier)
+        ec = Ecriture(idx, ["Campagnes", "Notes"])
+
+        def refuse(fonction, *args) -> bool:
+            try:
+                fonction(*args)
+            except EcritureRefusee:
+                return True
+            return False
+
+        # --- les chemins
+        r.verifie("hors des dossiers autorises : refuse", refuse(ec.preparer_creation, "Canon/Nouvelle", "x"))
+        r.verifie("remonter avec .. : refuse", refuse(ec.preparer_creation, "Campagnes/../Canon/X", "x"))
+        r.verifie("chemin absolu : refuse", refuse(ec.preparer_creation, "C:/Windows/X", "x"))
+        r.verifie("dossier de modele (_) : refuse", refuse(ec.preparer_creation, "Campagnes/_Modele/Autre", "x"))
+        r.verifie("caractere interdit : refuse", refuse(ec.preparer_creation, "Campagnes/A?B", "x"))
+        r.verifie("le dossier autorise lui-meme n'est pas une page", refuse(ec.preparer_creation, "Campagnes", "x"))
+        r.verifie("une page existante ne s'ecrase pas",
+                  refuse(ec.preparer_creation, "Campagnes/Existante/Campagne", "x"))
+        r.verifie("un modele ne se modifie pas", refuse(ec.preparer_modification, "Personnage", "", "x"))
+        r.verifie("une page hors zone ne se modifie pas", refuse(ec.preparer_modification, "Regle", "", "x"))
+
+        # --- une creation : rien n'est ecrit avant la validation
+        prop = ec.preparer_creation("Campagnes/Les voleurs/Lea", "# Lea\n\nEveillee.", "Fiche de Lea")
+        nouveau = dossier / "Campagnes" / "Les voleurs" / "Lea.md"
+        r.verifie("une proposition n'ecrit rien", not nouveau.exists())
+        chemin = ec.appliquer(prop)
+        r.verifie("la validation cree la page et ses dossiers",
+                  nouveau.is_file() and chemin == "Campagnes/Les voleurs/Lea")
+        r.verifie("la page creee est relue a chaud", idx.page("Campagnes/Les voleurs/Lea") is not None)
+        r.verifie("valider deux fois n'ecrase pas", refuse(ec.appliquer, prop))
+        retouche = ec.preparer_creation("Notes/Retouche", "avant")
+        ec.appliquer(retouche, "apres")
+        r.verifie("le texte retouche par le MJ remplace la proposition",
+                  (dossier / "Notes" / "Retouche.md").read_text(encoding="utf-8").strip() == "apres")
+
+        # --- une page creee d'apres un modele n'est pas un modele
+        copie = ec.preparer_creation(
+            "Notes/Fiche",
+            "---\ntype: modele\nmodele_de: pj\nstatut: modele\nvisibilite: mj\n---\n\n# Lea\n",
+        )["contenu"]
+        r.verifie("un `type: modele` recopie prend le type du modele (modele_de)",
+                  "type: pj" in copie and "modele_de" not in copie and "type: modele" not in copie, copie)
+        r.verifie("un `statut: modele` recopie devient brouillon", "statut: brouillon" in copie)
+        r.verifie("les autres metadonnees et le corps restent",
+                  "visibilite: mj" in copie and copie.endswith("# Lea\n"))
+        intacte = ec.preparer_creation("Notes/Autre", "---\ntype: pnj\nstatut: canon\n---\n\n# X")["contenu"]
+        r.verifie("une page qui n'est pas un modele est laissee telle quelle", "type: pnj\nstatut: canon" in intacte)
+
+        # --- une modification
+        existante = dossier / "Campagnes" / "Existante" / "Campagne.md"
+        r.verifie("le passage a remplacer doit exister",
+                  refuse(ec.preparer_modification, "Campagne existante", "absent", "x"))
+        r.verifie("le passage a remplacer doit etre unique",
+                  refuse(ec.preparer_modification, "Campagne existante", "\n", "x"))
+        modif = ec.preparer_modification("Campagne existante", "**Groupe :** (joueurs)", "**Groupe :** Ana, Ben")
+        r.verifie("une proposition de modification n'ecrit rien",
+                  "(joueurs)" in existante.read_text(encoding="utf-8"))
+        ec.appliquer(modif)
+        brut = existante.read_bytes().decode("utf-8")
+        r.verifie("la modification remplace le passage", "**Groupe :** Ana, Ben" in brut)
+        r.verifie("les fins de ligne de la page sont gardees (CRLF)", "\r\n" in brut and "\n\n" not in brut.replace("\r\n", ""))
+        ajout = ec.preparer_modification("Campagne existante", "", "- [[Ben]]", section="Les personnages joueurs")
+        ec.appliquer(ajout)
+        texte = existante.read_text(encoding="utf-8").replace("\r\n", "\n")
+        r.verifie("un ajout se place a la fin de sa section",
+                  "- [[Lea]]\n- [[Ben]]\n\n## Fin" in texte, repr(texte[-80:]))
+        perime = ec.preparer_modification("Campagne existante", "rien", "tout")
+        existante.write_text(texte.replace("rien", "modifie dans Obsidian"), encoding="utf-8")
+        r.verifie("une page changee depuis la proposition n'est pas ecrasee", refuse(ec.appliquer, perime))
+
+        # --- les blocs d'un modele sans outils
+        reponse = (
+            "Voici la fiche.\n\n```page chemin=\"Campagnes/Les voleurs/Ben\"\n# Ben\n\nMachine.\n```\n\n"
+            "```ajout page=\"Vide\" section=\"\"\n- une ligne\n```\n\n"
+            "```page chemin=\"Canon/Interdit\"\n# Non\n```\n"
+        )
+        r.verifie("les blocs de proposition sont reconnus", len(blocs_de(reponse)) == 3)
+        gardees: list[dict] = []
+
+        def proposer(p):
+            gardees.append(p)
+            return {**p, "id": str(len(gardees))}
+
+        bavard = ModeleBavard(reponse)
+        assistant = AssistantMJ(idx, bavard, False, ecriture=ec, proposer=proposer)
+        evenements = list(assistant.repondre("cree Ben", [], []))
+        types = [e["type"] for e in evenements]
+        r.verifie("un modele sans outils recoit le format des blocs", "```page chemin=" in bavard.systeme)
+        r.verifie("ses blocs deviennent des propositions", types.count("proposition") == 2, str(types))
+        r.verifie("un bloc hors zone est refuse, avec la raison", types.count("proposition_refusee") == 1)
+        r.verifie("et rien n'est ecrit", not (dossier / "Campagnes" / "Les voleurs" / "Ben.md").exists())
+
+        # --- les outils (Claude), et le mode joueurs
+        muet = ModeleMuet(outils=True)
+        avec = AssistantMJ(idx, muet, False, ecriture=ec, proposer=proposer)
+        list(avec.repondre("x", [], []))
+        r.verifie("un modele a outils recoit la consigne des outils d'ecriture",
+                  "proposer_page" in muet.systeme and "```page" not in muet.systeme)
+        retour = avec.executer("proposer_page", {"chemin": "Notes/Par outil", "contenu": "# Ok", "resume": "r"})
+        r.verifie("l'outil propose sans ecrire",
+                  retour.startswith("Proposition prete") and not (dossier / "Notes" / "Par outil.md").exists())
+        refus = avec.executer("proposer_page", {"chemin": "Canon/Non", "contenu": "# Non", "resume": ""})
+        r.verifie("l'outil explique un refus au modele", refus.startswith("Proposition refusee"))
+
+        muet_j = ModeleMuet(outils=True)
+        joueurs = AssistantMJ(idx, muet_j, True, ecriture=ec, proposer=proposer)
+        list(joueurs.repondre("x", [], []))
+        r.verifie("mode joueurs : pas de consigne d'ecriture", "proposer_page" not in muet_j.systeme)
+        r.verifie("mode joueurs : l'outil d'ecriture ne repond pas",
+                  joueurs.executer("proposer_page", {"chemin": "Notes/J", "contenu": "x", "resume": ""})
+                  .startswith("L'ecriture dans le coffre n'est pas disponible"))
+    finally:
+        shutil.rmtree(dossier, ignore_errors=True)
+
+
+def essais_ollama(r: Rapport) -> None:
+    """Les outils d'un modele Ollama, contre un faux serveur Ollama local."""
+    print("\n== ollama : outils ==")
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from .modele import ModeleOllama, _arguments
+
+    faux = {"capacites": ["completion", "tools"], "requetes": []}
+
+    class FauxOllama(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _envoyer(self, corps: bytes, type_mime: str = "application/json") -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", type_mime)
+            self.send_header("Content-Length", str(len(corps)))
+            self.end_headers()
+            self.wfile.write(corps)
+
+        def do_GET(self):
+            self._envoyer(_json.dumps({"models": [{"name": "faux:1"}]}).encode())
+
+        def do_POST(self):
+            charge = _json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+            if self.path == "/api/show":
+                return self._envoyer(_json.dumps({"capabilities": faux["capacites"]}).encode())
+            faux["requetes"].append(charge)
+            if any(m.get("role") == "tool" for m in charge["messages"]):
+                lignes = [{"message": {"content": "Selon la page, "}},
+                          {"message": {"content": "MOT-TEMOIN."}, "done": True}]
+            elif charge.get("tools"):
+                lignes = [{"message": {"content": "Je lis la page.", "tool_calls": [
+                    {"function": {"name": "lire_page", "arguments": {"page": "Publique"}}}]}, "done": True}]
+            else:
+                lignes = [{"message": {"content": "sans outils"}, "done": True}]
+            self._envoyer("\n".join(_json.dumps(l) for l in lignes).encode(), "application/x-ndjson")
+
+    serveur = ThreadingHTTPServer(("127.0.0.1", 0), FauxOllama)
+    threading.Thread(target=serveur.serve_forever, daemon=True).start()
+    url = "http://127.0.0.1:%d" % serveur.server_address[1]
+    dossier = Path(tempfile.mkdtemp(prefix="essai-ollama-"))
+    try:
+        r.verifie("la capacite `tools` est detectee", ModeleOllama("faux:1", url).outils_natifs)
+        r.verifie("« outils = non » les retire", not ModeleOllama("faux:1", url, outils="non").outils_natifs)
+        faux["capacites"] = ["completion"]
+        r.verifie("sans la capacite, pas d'outils", not ModeleOllama("faux:1", url).outils_natifs)
+        r.verifie("« outils = oui » les force", ModeleOllama("faux:1", url, outils="oui").outils_natifs)
+        r.verifie("un modele injoignable n'a pas d'outils",
+                  not ModeleOllama("faux:1", "http://127.0.0.1:9", delai=0.3).outils_natifs)
+        r.verifie("des arguments en chaine JSON sont lus", _arguments('{"page": "X"}') == {"page": "X"})
+        faux["capacites"] = ["completion", "tools"]
+
+        fabriquer_coffre(dossier)
+        idx = Index(dossier)
+        assistant = AssistantMJ(idx, ModeleOllama("faux:1", url), False)
+        evenements = list(assistant.repondre("Que dit la page publique ?", [], []))
+        texte = "".join(e.get("texte", "") for e in evenements if e["type"] == "texte")
+        premiere, seconde = faux["requetes"][0], faux["requetes"][1]
+        noms = [o["function"]["name"] for o in premiere.get("tools", [])]
+        r.verifie("les outils partent au format d'Ollama", "lire_page" in noms and "chercher" in noms, str(noms))
+        r.verifie("le coffre n'est plus fourni d'avance",
+                  "integralite du coffre" not in _json.dumps(premiere, ensure_ascii=False))
+        r.verifie("l'appel d'outil est annonce a l'interface",
+                  any(e["type"] == "outil" and e["nom"] == "lire_page" for e in evenements))
+        retour = next((m for m in seconde["messages"] if m.get("role") == "tool"), {})
+        r.verifie("le resultat de l'outil est renvoye au modele", "Page publique" in retour.get("content", ""))
+        r.verifie("le modele repond apres l'outil, en un nouveau paragraphe",
+                  texte == "Je lis la page.\n\nSelon la page, MOT-TEMOIN.", repr(texte))
+        r.verifie("la page lue apparait dans les sources",
+                  any(e["type"] == "sources" and e["pages"][0]["chemin"] == "Publique" for e in evenements))
+    finally:
+        serveur.shutdown()
+        shutil.rmtree(dossier, ignore_errors=True)
+
+
 def essais_secrets(r: Rapport) -> None:
     """Les cles d'API : lecture du .env, priorite, et non-divulgation.
 
@@ -597,6 +829,8 @@ def principal(argv: list[str] | None = None) -> int:
     essais_parametres(r)
     essais_secrets(r)
     essais_carte(r)
+    essais_ecriture(r)
+    essais_ollama(r)
 
     temporaire = Path(tempfile.mkdtemp(prefix="essai-coffre-"))
     try:

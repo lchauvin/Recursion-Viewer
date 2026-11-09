@@ -1,7 +1,8 @@
-"""Etat par coffre : pages epinglees, mode joueurs, historique de conversation.
+"""Etat par coffre : pages epinglees, mode joueurs, historique de conversation,
+propositions d'ecriture en attente de validation.
 
 Range hors du coffre, dans le dossier de donnees de l'utilisateur (DESIGN 6) :
-le coffre reste la seule source de verite, et l'outil n'y ecrit pas.
+le coffre reste la seule source de verite, et rien de cet etat n'y est ecrit.
 """
 
 from __future__ import annotations
@@ -9,12 +10,14 @@ from __future__ import annotations
 import json
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import dossier_donnees
 
 MESSAGES_CONSERVES = 60
+PROPOSITIONS_CONSERVEES = 40
 
 
 @dataclass
@@ -23,6 +26,7 @@ class EtatCoffre:
     epingles: list[str] = field(default_factory=list)
     mode_joueurs: bool = False
     conversation: list[dict] = field(default_factory=list)
+    propositions: list[dict] = field(default_factory=list)
 
     def vers_json(self) -> dict:
         return {
@@ -30,6 +34,7 @@ class EtatCoffre:
             "epingles": self.epingles,
             "mode_joueurs": self.mode_joueurs,
             "conversation": self.conversation[-MESSAGES_CONSERVES:],
+            "propositions": self.propositions[-PROPOSITIONS_CONSERVEES:],
         }
 
 
@@ -58,6 +63,8 @@ class Etats:
                     etat.mode_joueurs = bool(brut.get("mode_joueurs", False))
                     conv = brut.get("conversation", [])
                     etat.conversation = [m for m in conv if isinstance(m, dict)]
+                    props = brut.get("propositions", [])
+                    etat.propositions = [p for p in props if isinstance(p, dict) and p.get("id")]
                 except (OSError, ValueError, json.JSONDecodeError):
                     pass
             self._cache[cle] = etat
@@ -106,4 +113,23 @@ class Etats:
     def vider_conversation(self, cle: str) -> None:
         etat = self.pour(cle)
         etat.conversation = []
+        etat.propositions = []
+        self.enregistrer(etat)
+
+    # ----------------------------------------------------------- propositions
+
+    def ajouter_proposition(self, cle: str, proposition: dict) -> dict:
+        """Garde une proposition d'ecriture jusqu'a ce que le MJ la valide."""
+        etat = self.pour(cle)
+        rangee = {**proposition, "id": uuid.uuid4().hex[:12], "quand": time.time()}
+        etat.propositions = (etat.propositions + [rangee])[-PROPOSITIONS_CONSERVEES:]
+        self.enregistrer(etat)
+        return rangee
+
+    def proposition(self, cle: str, ident: str) -> dict | None:
+        return next((p for p in self.pour(cle).propositions if p.get("id") == ident), None)
+
+    def retirer_proposition(self, cle: str, ident: str) -> None:
+        etat = self.pour(cle)
+        etat.propositions = [p for p in etat.propositions if p.get("id") != ident]
         self.enregistrer(etat)

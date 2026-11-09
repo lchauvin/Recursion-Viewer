@@ -45,6 +45,10 @@ url = "http://localhost:11434"
 # Le menu « modele » de l'interface liste automatiquement tout ce qu'Ollama a
 # d'installe ; ce reglage n'est que la valeur de depart.
 modele = "llama3.1:8b"
+# Les outils (lire une page a la demande, proposer une ecriture) : « auto »
+# les donne au modele s'il declare la capacite `tools` (voir `ollama show`),
+# « oui » les force, « non » les retire : le coffre est alors fourni d'avance.
+# outils = "auto"
 
 # ---------------------------------------------------------------- les coffres
 #
@@ -54,9 +58,13 @@ modele = "llama3.1:8b"
 [coffres.recursion]
 chemin = "~/Documents/Recursion"
 nom = "Recursion : l'ere de l'Erosion"
-# Dossier ou l'assistant rangerait ses notes de seance, le jour ou l'ecriture
-# sera autorisee. Lu seulement, pour l'instant.
+# Dossier des notes de l'assistant (bouton « Enregistrer comme note »).
 dossier_notes = "10 Notes de l assistant"
+# Les dossiers ou l'assistant peut PROPOSER d'ecrire (fiches de personnages,
+# pages de campagne, notes). Rien n'est ecrit sans un clic du MJ sur
+# « Enregistrer », et jamais dans un dossier ou une page commencant par « _ »
+# (les modeles). Sans ce reglage : le seul dossier de notes.
+dossiers_ecriture = ["07 Campagnes", "10 Notes de l assistant"]
 
 # [coffres.bac-a-sable]
 # chemin = "~/Documents/Recursion-bac-a-sable"
