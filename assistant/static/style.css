@@ -617,13 +617,30 @@ body.vue-assistant .colonne-centre { display: none; }
 
 @media (max-width: 1024px) {
   body { overflow: auto; }
-  .grille { grid-template-columns: 1fr; }
+  /* La page defile en entier : l'application n'est plus bornee a l'ecran.
+     Sans `height: auto` et `min-height: auto`, la grille est ecrasee a la
+     hauteur restante, ses rangees retrecissent sous leur contenu et la page
+     se dessine par-dessus l'arborescence. */
+  .app { height: auto; min-height: 100%; }
+  .grille { flex: none; grid-template-columns: 1fr; }
+  .colonne { min-height: auto; max-height: none; }
   .colonne-centre, .colonne-droite { grid-column: auto; grid-row: auto; }
-  .colonne { max-height: none; }
   .colonne-gauche, .colonne-droite { border: none; border-top: 1px solid var(--filet); }
-  .navigation, .page, .conversation { overflow: visible; max-height: none; }
+  /* L'arborescence defile dans son propre cadre pour laisser voir la page. */
+  .navigation { flex: none; max-height: 40vh; overflow-y: auto; }
+  .page, .conversation { overflow: visible; max-height: none; }
   .page { padding: var(--e4) var(--e4) var(--e8); }
-  .barre { flex-wrap: wrap; }
+  /* La barre passe sur plusieurs lignes au lieu de deborder de l'ecran. */
+  .barre { flex-wrap: wrap; position: sticky; top: 0; z-index: 5; }
+  .barre-actions { flex: 1 1 100%; flex-wrap: wrap; min-width: 0; }
+  .selecteur { flex: 1 1 140px; min-width: 0; }
+  .selecteur select { max-width: none; width: 100%; }
+}
+
+@media (max-width: 480px) {
+  .barre { padding: var(--e2) var(--e3); gap: var(--e2); }
+  .centre-barre { flex-wrap: wrap; }
+  .indice { display: none; }
 }
 
 /* -------------------------------------------------------------- ecriture */
@@ -892,6 +909,9 @@ body.carte-large .colonne-gauche { visibility: hidden; border: none; }
   .page.page-carte { height: 72vh; min-height: 420px; overflow: hidden; }
   .carte-haut { right: var(--e3); top: 52px; }
   .carte-aide { display: none; }
+  /* La carte agrandie ne doit pas recreer deux colonnes sur mobile. */
+  body.carte-large .grille { grid-template-columns: 1fr; }
+  body.carte-large .colonne-gauche { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
